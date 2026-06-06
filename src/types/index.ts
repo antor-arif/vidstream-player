@@ -40,6 +40,8 @@ export type WatermarkPosition =
 
 export interface WatermarkConfig {
   enabled: boolean;
+  /** Inline SVG string — rendered directly into the DOM. Takes priority over imageUrl and text. */
+  svgContent?: string;
   imageUrl?: string;
   text?: string;
   opacity?: number;

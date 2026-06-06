@@ -71,8 +71,8 @@ export function showResumePrompt(container: HTMLElement, time: number): Promise<
       resolve(result);
     };
 
-    overlay.querySelector('.vp-resume-yes')!.addEventListener('click', () => cleanup(true));
-    overlay.querySelector('.vp-resume-no')!.addEventListener('click', () => cleanup(false));
+    overlay.querySelector('.vp-resume-yes')!.addEventListener('click', (e) => { e.stopPropagation(); cleanup(true); });
+    overlay.querySelector('.vp-resume-no')!.addEventListener('click', (e) => { e.stopPropagation(); cleanup(false); });
   });
 }
 

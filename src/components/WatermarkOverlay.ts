@@ -97,7 +97,7 @@ export class WatermarkManager {
 
   initialize(): void {
     if (!this.config.enabled) return;
-    if (!this.config.imageUrl && !this.config.text) return;
+    if (!this.config.svgContent && !this.config.imageUrl && !this.config.text) return;
     this.createWatermarkElement();
   }
 
@@ -119,7 +119,18 @@ export class WatermarkManager {
       ...positionStyles,
     });
 
-    if (this.config.imageUrl) {
+    if (this.config.svgContent) {
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = this.config.svgContent;
+      const svg = wrapper.querySelector('svg');
+      if (svg) {
+        if (this.config.imageWidth) svg.style.width = this.config.imageWidth;
+        if (this.config.imageHeight) svg.style.height = this.config.imageHeight;
+        svg.style.display = 'block';
+        svg.style.overflow = 'visible';
+        this.element.appendChild(svg);
+      }
+    } else if (this.config.imageUrl) {
       const img = document.createElement('img');
       img.src = this.config.imageUrl;
       img.alt = '';
@@ -149,7 +160,7 @@ export class WatermarkManager {
   }
 
   updateConfig(config: Partial<WatermarkConfig>): void {
-    const needsRecreate = (config.imageUrl !== undefined || config.text !== undefined);
+    const needsRecreate = (config.svgContent !== undefined || config.imageUrl !== undefined || config.text !== undefined);
     this.config = { ...this.config, ...config };
 
     if (config.enabled !== undefined) {

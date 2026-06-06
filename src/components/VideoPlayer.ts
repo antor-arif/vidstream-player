@@ -573,6 +573,9 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     if (resumeCfg.promptUser !== false) {
       const resume = await showResumePrompt(this.container, data.time);
       if (resume) this.seek(data.time);
+      // Explicitly start playback — click propagation is stopped in the prompt
+      // so the container click handler won't fire. We start play here instead.
+      await this.play();
     } else {
       this.seek(data.time);
     }
