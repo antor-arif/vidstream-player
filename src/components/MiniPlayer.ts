@@ -87,6 +87,13 @@ export class MiniPlayer {
 
     this.container.classList.add('vp-mini-active');
 
+    // Switch observer target: the container is now position:fixed so the browser
+    // considers it always "intersecting" the viewport — watching it would cause an
+    // infinite attach/detach loop. Watch the spacer instead: when it scrolls back
+    // into view the user has returned to the player position, so we detach.
+    this.observer?.unobserve(this.container);
+    this.observer?.observe(this.spacer);
+
     // Add close + back controls overlay
     this.closeBtn = document.createElement('div');
     this.closeBtn.className = 'vp-mini-controls';
@@ -112,6 +119,9 @@ export class MiniPlayer {
     if (!this.isMini) return;
     this.isMini = false;
 
+    // Stop watching the spacer before removing it
+    if (this.spacer) this.observer?.unobserve(this.spacer);
+
     // Restore container styles
     for (const key of this.styleKeys) {
       (this.container.style as unknown as Record<string, string>)[key] = this.savedStyles[key] ?? '';
@@ -128,6 +138,13 @@ export class MiniPlayer {
 
     if (permanent) {
       this.observer?.disconnect();
+    } else {
+      // Re-observe the container after layout settles. The container is now
+      // back in the document flow; a short delay prevents a spurious re-attach
+      // before the browser has updated intersection state.
+      setTimeout(() => {
+        if (!this.isMini && this.observer) this.observer.observe(this.container);
+      }, 200);
     }
   }
 
