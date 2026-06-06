@@ -1,0 +1,1031 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vidstream Player - Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f0f23 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+            color: #fff;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        header h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            color: #888;
+            font-size: 1.1rem;
+        }
+
+        .main-layout {
+            display: grid;
+            grid-template-columns: 1fr 380px;
+            gap: 30px;
+            margin-bottom: 60px;
+        }
+
+        @media (max-width: 1200px) {
+            .main-layout {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .players-section {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+
+        .demo-card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .demo-card h2 {
+            font-size: 1.2rem;
+            margin-bottom: 6px;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .mode-badge {
+            font-size: 0.7rem;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .mode-badge.ott {
+            background: #e50914;
+            color: white;
+        }
+
+        .mode-badge.lms {
+            background: #10b981;
+            color: white;
+        }
+
+        .mode-badge.live {
+            background: #f97316;
+            color: white;
+            animation: pulse-live 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse-live {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .demo-card .subtitle {
+            color: #888;
+            font-size: 0.85rem;
+            margin-bottom: 16px;
+        }
+
+        .player-wrapper {
+            border-radius: 12px;
+            overflow: hidden;
+            background: #000;
+        }
+
+        video-player {
+            display: block;
+            width: 100%;
+            aspect-ratio: 16/9;
+        }
+
+        .features {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 12px;
+        }
+
+        .feature-tag {
+            background: rgba(102, 126, 234, 0.2);
+            color: #667eea;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        /* Controls Panel */
+        .controls-panel {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            position: sticky;
+            top: 20px;
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
+        }
+
+        .controls-panel h3 {
+            font-size: 1rem;
+            margin-bottom: 16px;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .controls-panel h3 svg {
+            width: 18px;
+            height: 18px;
+        }
+
+        .control-group {
+            margin-bottom: 20px;
+        }
+
+        .control-group label {
+            display: block;
+            font-size: 0.8rem;
+            color: #888;
+            margin-bottom: 6px;
+            font-weight: 500;
+        }
+
+        .control-group input[type="text"],
+        .control-group input[type="number"],
+        .control-group select {
+            width: 100%;
+            padding: 10px 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            color: #fff;
+            font-size: 0.85rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .control-group input:focus,
+        .control-group select:focus {
+            border-color: #667eea;
+        }
+
+        .control-group input[type="color"] {
+            width: 100%;
+            height: 40px;
+            padding: 4px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            cursor: pointer;
+        }
+
+        .control-group input[type="range"] {
+            width: 100%;
+            accent-color: #667eea;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: #667eea;
+        }
+
+        .checkbox-group label {
+            margin: 0;
+            color: #fff;
+        }
+
+        .divider {
+            height: 1px;
+            background: rgba(255, 255, 255, 0.1);
+            margin: 20px 0;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 12px 16px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border: none;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            margin-top: 8px;
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.2);
+            box-shadow: none;
+        }
+
+        /* Code Section */
+        .code-section {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            padding: 24px;
+            margin-top: 40px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .code-section h3 {
+            font-size: 1.1rem;
+            margin-bottom: 16px;
+            color: #fff;
+        }
+
+        pre {
+            background: #0d1117;
+            border-radius: 8px;
+            padding: 16px;
+            overflow-x: auto;
+            font-family: 'Fira Code', 'Monaco', 'Consolas', monospace;
+            font-size: 0.8rem;
+            line-height: 1.6;
+        }
+
+        code {
+            color: #e6edf3;
+        }
+
+        .comment { color: #8b949e; }
+        .string { color: #a5d6ff; }
+        .keyword { color: #ff7b72; }
+        .function { color: #d2a8ff; }
+        .property { color: #79c0ff; }
+
+        footer {
+            text-align: center;
+            padding-top: 40px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        /* Player Select Tabs */
+        .player-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .player-tab {
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            color: #888;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+
+        .player-tab.active {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border-color: transparent;
+            color: #fff;
+        }
+
+        .range-value {
+            font-size: 0.75rem;
+            color: #667eea;
+            margin-top: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Vidstream Player</h1>
+            <p>A modern, customizable HTML5 video player SDK with HLS support</p>
+        </header>
+
+        <div class="main-layout">
+            <!-- Players Section -->
+            <div class="players-section">
+                <!-- OTT Mode Demo -->
+                <div class="demo-card">
+                    <h2>
+                        <span class="mode-badge ott">OTT</span>
+                        Big Buck Bunny - Cinema Mode
+                    </h2>
+                    <p class="subtitle">Classic animated short — HLS, title overlay, chapters &amp; captions</p>
+                    <div class="player-wrapper">
+                        <video-player
+                            id="ott-player"
+                            src="https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
+                            poster="https://peach.blender.org/wp-content/uploads/bbb-splash.png"
+                            title="Big Buck Bunny (2008)"
+                            mode="ott"
+                            accent-color="#e50914"
+                            watermark-enabled="true"
+                            watermark-text="Vidstream"
+                            watermark-position="top-right"
+                            watermark-opacity="0.5"
+                            subtitles='[{"src":"/test-captions.vtt","language":"en","label":"English","kind":"subtitles"}]'
+                        ></video-player>
+                    </div>
+                    <div class="features">
+                        <span class="feature-tag">HLS Streaming</span>
+                        <span class="feature-tag">Quality Selection</span>
+                        <span class="feature-tag">Auto Quality Label</span>
+                        <span class="feature-tag">Title Overlay</span>
+                        <span class="feature-tag">Chapters</span>
+                        <span class="feature-tag">Captions</span>
+                        <span class="feature-tag">PiP Mode</span>
+                        <span class="feature-tag">Fullscreen</span>
+                    </div>
+                </div>
+
+                <!-- LMS Mode Demo -->
+                <div class="demo-card">
+                    <h2>
+                        <span class="mode-badge lms">LMS</span>
+                        Sintel - Learning Mode
+                    </h2>
+                    <p class="subtitle">Epic fantasy short - with chapters and progress tracking</p>
+                    <div class="player-wrapper">
+                        <video-player
+                            id="lms-player"
+                            src="https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8"
+                            poster="https://upload.wikimedia.org/wikipedia/commons/thumb/9/93/Sintel_poster.jpg/440px-Sintel_poster.jpg"
+                            mode="lms"
+                            accent-color="#10b981"
+                            lms-enabled="true"
+                            lms-video-id="sintel-demo"
+                            watermark-enabled="true"
+                            watermark-text="LMS Demo"
+                            watermark-position="top-right"
+                            watermark-opacity="0.5"
+                        ></video-player>
+                    </div>
+                    <div class="features">
+                        <span class="feature-tag">Progress Tracking</span>
+                        <span class="feature-tag">Chapter Markers</span>
+                        <span class="feature-tag">Speed Control</span>
+                        <span class="feature-tag">Keyboard Shortcuts</span>
+                    </div>
+                </div>
+
+                <!-- Live Stream Demo -->
+                <div class="demo-card">
+                    <h2>
+                        <span class="mode-badge live">LIVE</span>
+                        Live Stream Demo
+                    </h2>
+                    <p class="subtitle">24/7 live HLS stream - test live streaming capabilities</p>
+                    <div class="player-wrapper">
+                        <video-player
+                            id="live-player"
+                            src="https://2050today.org/wp-content/uploads/2020/07/Video-Placeholder.mp4?_=9"
+                            mode="live"
+                            accent-color="#f97316"
+                            watermark-enabled="true"
+                            watermark-text="LIVE DEMO"
+                            watermark-position="top-right"
+                        ></video-player>
+                    </div>
+                    <div class="features">
+                        <span class="feature-tag">Live HLS</span>
+                        <span class="feature-tag">No Seeking</span>
+                        <span class="feature-tag">Auto Quality</span>
+                        <span class="feature-tag">Real-time</span>
+                    </div>
+                </div>
+
+                <!-- MP4 Demo -->
+                <div class="demo-card">
+                    <h2>
+                        <span class="mode-badge" style="background:#6366f1;color:white;">MP4</span>
+                        Sintel Trailer — Direct MP4
+                    </h2>
+                    <p class="subtitle">Native MP4 playback — no streaming library required</p>
+                    <div class="player-wrapper">
+                        <video-player
+                            id="mp4-player"
+                            src="https://media.w3.org/2010/05/sintel/trailer.mp4"
+                            source-type="mp4"
+                            poster="https://media.w3.org/2010/05/sintel/poster.png"
+                            title="Sintel Trailer — MP4"
+                            mode="ott"
+                            accent-color="#6366f1"
+                            watermark-enabled="true"
+                            watermark-text="MP4 Demo"
+                            watermark-position="top-right"
+                            watermark-opacity="0.5"
+                        ></video-player>
+                    </div>
+                    <div class="features">
+                        <span class="feature-tag">Native MP4</span>
+                        <span class="feature-tag">No HLS.js</span>
+                        <span class="feature-tag">Full Controls</span>
+                        <span class="feature-tag">Title Overlay</span>
+                    </div>
+                </div>
+
+                <!-- DASH Demo -->
+                <div class="demo-card">
+                    <h2>
+                        <span class="mode-badge" style="background:#0ea5e9;color:white;">DASH</span>
+                        Big Buck Bunny — MPEG-DASH
+                    </h2>
+                    <p class="subtitle">Adaptive DASH streaming powered by dash.js — multi-quality ABR</p>
+                    <div class="player-wrapper">
+                        <video-player
+                            id="dash-player"
+                            src="https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd"
+                            source-type="dash"
+                            title="Big Buck Bunny — DASH"
+                            mode="ott"
+                            accent-color="#0ea5e9"
+                            watermark-enabled="true"
+                            watermark-text="DASH Demo"
+                            watermark-position="top-right"
+                            watermark-opacity="0.5"
+                        ></video-player>
+                    </div>
+                    <div class="features">
+                        <span class="feature-tag">MPEG-DASH</span>
+                        <span class="feature-tag">dash.js</span>
+                        <span class="feature-tag">Multi Quality</span>
+                        <span class="feature-tag">ABR</span>
+                    </div>
+                </div>
+
+                <!-- Chapters Showcase Demo -->
+                <div class="demo-card">
+                    <h2>
+                        <span class="mode-badge" style="background:#a855f7;color:white;">CHAPTERS</span>
+                        Sintel — Chapter Navigation
+                    </h2>
+                    <p class="subtitle">Full chapter markers on the progress bar — click any chapter to jump instantly</p>
+                    <div class="player-wrapper">
+                        <video-player
+                            id="chapters-player"
+                            src="https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8"
+                            poster="https://upload.wikimedia.org/wikipedia/commons/thumb/9/93/Sintel_poster.jpg/440px-Sintel_poster.jpg"
+                            title="Sintel — Chapter Navigation"
+                            mode="ott"
+                            accent-color="#a855f7"
+                            subtitles='[{"src":"/test-captions.vtt","label":"English","srclang":"en","default":true}]'
+                        ></video-player>
+                    </div>
+                    <div class="features">
+                        <span class="feature-tag">Chapter Markers</span>
+                        <span class="feature-tag">Chapter Dropdown</span>
+                        <span class="feature-tag">VTT Subtitles</span>
+                        <span class="feature-tag">Jump to Chapter</span>
+                        <span class="feature-tag">Progress Tooltips</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Customization Panel -->
+            <div class="controls-panel">
+                <h3>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
+                    </svg>
+                    Customization
+                </h3>
+
+                <!-- Player Select -->
+                <div class="control-group">
+                    <label>Select Player to Customize</label>
+                    <div class="player-tabs">
+                        <div class="player-tab active" data-player="ott-player">OTT</div>
+                        <div class="player-tab" data-player="lms-player">LMS</div>
+                        <div class="player-tab" data-player="live-player">LIVE</div>
+                    </div>
+                </div>
+
+                <div class="divider"></div>
+
+                <!-- Theme Settings -->
+                <div class="control-group">
+                    <label>Accent Color</label>
+                    <input type="color" id="accent-color" value="#e50914">
+                </div>
+
+                <div class="control-group">
+                    <label>Mode</label>
+                    <select id="player-mode">
+                        <option value="ott">OTT (Cinema)</option>
+                        <option value="lms">LMS (Educational)</option>
+                        <option value="live">Live (Streaming)</option>
+                    </select>
+                </div>
+
+                <div class="divider"></div>
+
+                <!-- Watermark Settings -->
+                <div class="control-group">
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="watermark-enabled" checked>
+                        <label for="watermark-enabled">Enable Watermark</label>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Watermark Image URL</label>
+                    <input type="text" id="watermark-image" placeholder="https://example.com/logo.png">
+                </div>
+
+                <div class="control-group">
+                    <label>Watermark Text (if no image)</label>
+                    <input type="text" id="watermark-text" placeholder="Your Brand" value="Vidstream">
+                </div>
+
+                <div class="control-group">
+                    <label>Watermark Position</label>
+                    <select id="watermark-position">
+                        <option value="top-left">Top Left</option>
+                        <option value="top-right" selected>Top Right</option>
+                        <option value="bottom-left">Bottom Left</option>
+                        <option value="bottom-right">Bottom Right</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label>Watermark Opacity</label>
+                    <input type="range" id="watermark-opacity" min="0.1" max="1" step="0.1" value="0.5">
+                    <div class="range-value" id="opacity-value">50%</div>
+                </div>
+
+                <div class="divider"></div>
+
+                <!-- Anti-Piracy Text Settings -->
+                <div class="control-group">
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="antipiracy-enabled">
+                        <label for="antipiracy-enabled">Enable Anti-Piracy Text</label>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Anti-Piracy Text</label>
+                    <input type="text" id="antipiracy-text" placeholder="user@email.com or ID" value="viewer@vidstream.com">
+                </div>
+
+                <div class="control-group">
+                    <label>Anti-Piracy Opacity</label>
+                    <input type="range" id="antipiracy-opacity" min="0.1" max="0.5" step="0.05" value="0.3">
+                    <div class="range-value" id="antipiracy-opacity-value">30%</div>
+                </div>
+
+                <div class="control-group">
+                    <label>Anti-Piracy Text Color</label>
+                    <input type="color" id="antipiracy-color" value="#ffffff">
+                </div>
+
+                <div class="divider"></div>
+
+                <!-- Quality Filtering Settings -->
+                <div class="control-group">
+                    <label>Allowed Qualities</label>
+                    <div class="quality-checkboxes" style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="quality-1080" value="1080" checked>
+                            <label for="quality-1080">1080p (Full HD)</label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="quality-720" value="720" checked>
+                            <label for="quality-720">720p (HD)</label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="quality-480" value="480" checked>
+                            <label for="quality-480">480p (SD)</label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="quality-360" value="360" checked>
+                            <label for="quality-360">360p (Low)</label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="quality-240" value="240" checked>
+                            <label for="quality-240">240p (Very Low)</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="show-auto-quality" checked>
+                        <label for="show-auto-quality">Show Auto Quality Option</label>
+                    </div>
+                </div>
+
+                <div class="divider"></div>
+
+                <!-- Playback Settings -->
+                <div class="control-group">
+                    <label>Playback Speed</label>
+                    <select id="playback-speed">
+                        <option value="0.25">0.25x</option>
+                        <option value="0.5">0.5x</option>
+                        <option value="0.75">0.75x</option>
+                        <option value="1" selected>1x (Normal)</option>
+                        <option value="1.25">1.25x</option>
+                        <option value="1.5">1.5x</option>
+                        <option value="1.75">1.75x</option>
+                        <option value="2">2x</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label>Volume</label>
+                    <input type="range" id="volume" min="0" max="1" step="0.1" value="1">
+                    <div class="range-value" id="volume-value">100%</div>
+                </div>
+
+                <div class="divider"></div>
+
+                <button class="btn" id="apply-changes">Apply Changes</button>
+                <button class="btn btn-secondary" id="add-chapters">Add Sample Chapters</button>
+                <button class="btn btn-secondary" id="reset-player">Reset Player</button>
+            </div>
+        </div>
+
+        <!-- Code Examples -->
+        <div class="code-section">
+            <h3>Installation</h3>
+            <pre><code><span class="comment"># NPM</span>
+npm install vidstream-player
+
+<span class="comment"># Yarn</span>
+yarn add vidstream-player
+
+<span class="comment"># PNPM</span>
+pnpm add vidstream-player</code></pre>
+        </div>
+
+        <div class="code-section">
+            <h3>Quick Start (HTML)</h3>
+            <pre><code><span class="comment">&lt;!-- Include the SDK --&gt;</span>
+<span class="keyword">&lt;script</span> <span class="property">src</span>=<span class="string">"https://unpkg.com/vidstream-player/dist/vidstream-player.umd.js"</span><span class="keyword">&gt;&lt;/script&gt;</span>
+
+<span class="comment">&lt;!-- Add the player --&gt;</span>
+<span class="keyword">&lt;video-player</span>
+  <span class="property">src</span>=<span class="string">"https://example.com/video.m3u8"</span>
+  <span class="property">poster</span>=<span class="string">"https://example.com/poster.jpg"</span>
+  <span class="property">mode</span>=<span class="string">"ott"</span>
+  <span class="property">accent-color</span>=<span class="string">"#e50914"</span>
+<span class="keyword">&gt;&lt;/video-player&gt;</span></code></pre>
+        </div>
+
+        <div class="code-section">
+            <h3>JavaScript API</h3>
+            <pre><code><span class="keyword">const</span> player = <span class="keyword">document</span>.<span class="function">getElementById</span>(<span class="string">'my-player'</span>);
+
+<span class="comment">// Playback controls</span>
+player.<span class="function">play</span>();
+player.<span class="function">pause</span>();
+player.<span class="function">togglePlay</span>();
+player.<span class="function">seek</span>(<span class="keyword">30</span>); <span class="comment">// Seek to 30 seconds</span>
+
+<span class="comment">// Volume & playback</span>
+player.<span class="function">setVolume</span>(<span class="keyword">0.5</span>);
+player.<span class="function">toggleMute</span>();
+player.<span class="function">setPlaybackRate</span>(<span class="keyword">1.5</span>);
+
+<span class="comment">// Fullscreen & PiP</span>
+player.<span class="function">toggleFullscreen</span>();
+player.<span class="function">togglePip</span>();
+
+<span class="comment">// Get current state</span>
+<span class="keyword">const</span> state = player.<span class="function">getState</span>();
+<span class="keyword">console</span>.<span class="function">log</span>(state.<span class="property">currentTime</span>, state.<span class="property">duration</span>);
+
+<span class="comment">// Set chapters</span>
+player.<span class="function">setChapters</span>([
+  { <span class="property">id</span>: <span class="string">'1'</span>, <span class="property">title</span>: <span class="string">'Introduction'</span>, <span class="property">startTime</span>: <span class="keyword">0</span> },
+  { <span class="property">id</span>: <span class="string">'2'</span>, <span class="property">title</span>: <span class="string">'Main Content'</span>, <span class="property">startTime</span>: <span class="keyword">60</span> },
+  { <span class="property">id</span>: <span class="string">'3'</span>, <span class="property">title</span>: <span class="string">'Conclusion'</span>, <span class="property">startTime</span>: <span class="keyword">180</span> }
+]);
+
+<span class="comment">// Event listeners</span>
+player.<span class="function">addEventListener</span>(<span class="string">'player-play'</span>, () => <span class="function">console</span>.<span class="function">log</span>(<span class="string">'Playing'</span>));
+player.<span class="function">addEventListener</span>(<span class="string">'player-pause'</span>, () => <span class="function">console</span>.<span class="function">log</span>(<span class="string">'Paused'</span>));
+player.<span class="function">addEventListener</span>(<span class="string">'player-ended'</span>, () => <span class="function">console</span>.<span class="function">log</span>(<span class="string">'Ended'</span>));
+player.<span class="function">addEventListener</span>(<span class="string">'player-timeupdate'</span>, (e) => {
+  <span class="function">console</span>.<span class="function">log</span>(<span class="string">'Time:'</span>, e.<span class="property">detail</span>.<span class="property">state</span>.<span class="property">currentTime</span>);
+});</code></pre>
+        </div>
+
+        <div class="code-section">
+            <h3>NPM / ES Modules</h3>
+            <pre><code><span class="comment">// Import the web component</span>
+<span class="keyword">import</span> <span class="string">'vidstream-player'</span>;
+
+<span class="comment">// Or create programmatically</span>
+<span class="keyword">import</span> { VidstreamPlayer } <span class="keyword">from</span> <span class="string">'vidstream-player'</span>;
+
+<span class="keyword">const</span> player = VidstreamPlayer.<span class="function">create</span>(<span class="string">'#container'</span>, {
+  <span class="property">source</span>: {
+    <span class="property">src</span>: <span class="string">'https://example.com/video.m3u8'</span>,
+    <span class="property">type</span>: <span class="string">'hls'</span>,
+    <span class="property">poster</span>: <span class="string">'https://example.com/poster.jpg'</span>
+  },
+  <span class="property">mode</span>: <span class="string">'ott'</span>,
+  <span class="property">theme</span>: {
+    <span class="property">accentColor</span>: <span class="string">'#e50914'</span>
+  },
+  <span class="property">watermark</span>: {
+    <span class="property">enabled</span>: <span class="keyword">true</span>,
+    <span class="property">text</span>: <span class="string">'My Brand'</span>,
+    <span class="property">position</span>: <span class="string">'top-right'</span>
+  }
+});</code></pre>
+        </div>
+
+        <footer>
+            <p>Vidstream Player SDK &copy; 2024 - MIT License</p>
+        </footer>
+    </div>
+
+    <!-- Include the SDK -->
+    <script type="module">
+        import { registerVideoPlayerElement, VidstreamPlayer } from './src/webcomponent.ts';
+        import Hls from 'hls.js';
+        
+        // Register the web component
+        registerVideoPlayerElement();
+
+        // Expose globally
+        window.VidstreamPlayer = VidstreamPlayer;
+        
+        // Direct HLS test for debugging
+        window.testHLSLevels = function(url) {
+            const hls = new Hls();
+            hls.loadSource(url || 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8');
+            hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
+                
+            });
+            const tempVideo = document.createElement('video');
+            hls.attachMedia(tempVideo);
+        };
+        
+        // Run test on load
+        setTimeout(() => window.testHLSLevels(), 1000);
+
+        // Wait for DOM
+        document.addEventListener('DOMContentLoaded', () => {
+            const ottPlayer = document.getElementById('ott-player');
+            const lmsPlayer = document.getElementById('lms-player');
+            let activePlayer = ottPlayer;
+
+            // Set chapters directly — ready fires before DOMContentLoaded so event listeners miss it
+            if (ottPlayer) {
+                ottPlayer.setChapters([
+                    { id: '1', title: 'Opening',        startTime: 0 },
+                    { id: '2', title: 'Meet the Bunny', startTime: 30 },
+                    { id: '3', title: 'The Squirrels',  startTime: 90 },
+                    { id: '4', title: 'The Chase',      startTime: 180 },
+                    { id: '5', title: 'Revenge',        startTime: 300 },
+                    { id: '6', title: 'Finale',         startTime: 450 }
+                ]);
+            }
+
+            if (lmsPlayer) {
+                lmsPlayer.setChapters([
+                    { id: '1', title: 'Opening Credits',         startTime: 0 },
+                    { id: '2', title: 'Sintel\'s Journey Begins',startTime: 65 },
+                    { id: '3', title: 'The Search',              startTime: 180 },
+                    { id: '4', title: 'Discovery',               startTime: 360 },
+                    { id: '5', title: 'The Dragon\'s Lair',      startTime: 480 },
+                    { id: '6', title: 'Final Confrontation',     startTime: 600 },
+                    { id: '7', title: 'Ending',                  startTime: 720 }
+                ]);
+            }
+
+            const chaptersPlayer = document.getElementById('chapters-player');
+            if (chaptersPlayer) {
+                chaptersPlayer.setChapters([
+                    { id: '1',  title: 'Cold Open',          startTime: 0 },
+                    { id: '2',  title: 'Sintel Awakens',     startTime: 22 },
+                    { id: '3',  title: 'The Stolen Dragon',  startTime: 55 },
+                    { id: '4',  title: 'Icy Wasteland',      startTime: 130 },
+                    { id: '5',  title: 'The Desert Road',    startTime: 220 },
+                    { id: '6',  title: 'Through the Forest', startTime: 320 },
+                    { id: '7',  title: 'Mountain Ascent',    startTime: 420 },
+                    { id: '8',  title: 'Dragon\'s Lair',     startTime: 570 },
+                    { id: '9',  title: 'The Revelation',     startTime: 660 },
+                    { id: '10', title: 'Sintel\'s Lament',   startTime: 760 },
+                    { id: '11', title: 'End Credits',        startTime: 840 }
+                ]);
+            }
+
+            // Player tabs
+            document.querySelectorAll('.player-tab').forEach(tab => {
+                tab.addEventListener('click', () => {
+                    document.querySelectorAll('.player-tab').forEach(t => t.classList.remove('active'));
+                    tab.classList.add('active');
+                    const playerId = tab.dataset.player;
+                    activePlayer = document.getElementById(playerId);
+                    
+                    // Update controls to reflect current player state
+                    if (activePlayer) {
+                        document.getElementById('player-mode').value = 
+                            activePlayer.getAttribute('mode') || 'ott';
+                        document.getElementById('accent-color').value = 
+                            activePlayer.getAttribute('accent-color') || '#e50914';
+                        document.getElementById('watermark-enabled').checked = 
+                            activePlayer.getAttribute('watermark-enabled') === 'true';
+                        document.getElementById('watermark-text').value = 
+                            activePlayer.getAttribute('watermark-text') || '';
+                        document.getElementById('watermark-image').value = 
+                            activePlayer.getAttribute('watermark-image') || '';
+                        document.getElementById('watermark-position').value = 
+                            activePlayer.getAttribute('watermark-position') || 'top-right';
+                        document.getElementById('watermark-opacity').value = 
+                            activePlayer.getAttribute('watermark-opacity') || '0.5';
+                        document.getElementById('opacity-value').textContent = 
+                            Math.round((parseFloat(activePlayer.getAttribute('watermark-opacity')) || 0.5) * 100) + '%';
+                        // Anti-piracy text
+                        document.getElementById('antipiracy-enabled').checked = 
+                            activePlayer.getAttribute('antipiracy-enabled') === 'true';
+                        document.getElementById('antipiracy-text').value = 
+                            activePlayer.getAttribute('antipiracy-text') || 'viewer@vidstream.com';
+                        document.getElementById('antipiracy-opacity').value = 
+                            activePlayer.getAttribute('antipiracy-opacity') || '0.3';
+                        document.getElementById('antipiracy-opacity-value').textContent = 
+                            Math.round((parseFloat(activePlayer.getAttribute('antipiracy-opacity')) || 0.3) * 100) + '%';
+                    }
+                });
+            });
+
+            // Helper function to update watermark instantly
+            function updateWatermark() {
+                if (!activePlayer) return;
+                activePlayer.setAttribute('watermark-enabled', document.getElementById('watermark-enabled').checked);
+                activePlayer.setAttribute('watermark-text', document.getElementById('watermark-text').value);
+                activePlayer.setAttribute('watermark-image', document.getElementById('watermark-image').value);
+                activePlayer.setAttribute('watermark-position', document.getElementById('watermark-position').value);
+                activePlayer.setAttribute('watermark-opacity', document.getElementById('watermark-opacity').value);
+            }
+
+            // Helper function to update anti-piracy text
+            function updateAntiPiracyText() {
+                if (!activePlayer) return;
+                activePlayer.setAttribute('antipiracy-enabled', document.getElementById('antipiracy-enabled').checked);
+                activePlayer.setAttribute('antipiracy-text', document.getElementById('antipiracy-text').value);
+                activePlayer.setAttribute('antipiracy-opacity', document.getElementById('antipiracy-opacity').value);
+                activePlayer.setAttribute('antipiracy-color', document.getElementById('antipiracy-color').value);
+            }
+
+            // Helper function to update quality filter
+            function updateQualityFilter() {
+                if (!activePlayer) return;
+                const checkboxes = document.querySelectorAll('.quality-checkboxes input[type="checkbox"]');
+                const selected = Array.from(checkboxes)
+                    .filter(cb => cb.checked)
+                    .map(cb => cb.value);
+                activePlayer.setAttribute('quality-allowed', selected.join(','));
+                activePlayer.setAttribute('quality-show-auto', document.getElementById('show-auto-quality').checked);
+            }
+
+            // Accent color - instant
+            document.getElementById('accent-color').addEventListener('input', (e) => {
+                if (activePlayer) {
+                    activePlayer.setAttribute('accent-color', e.target.value);
+                }
+            });
+
+            // Player mode - instant
+            document.getElementById('player-mode').addEventListener('change', (e) => {
+                if (activePlayer) {
+                    activePlayer.setAttribute('mode', e.target.value);
+                }
+            });
+
+            // Watermark enabled - instant
+            document.getElementById('watermark-enabled').addEventListener('change', updateWatermark);
+
+            // Watermark text - instant
+            document.getElementById('watermark-text').addEventListener('input', updateWatermark);
+
+            // Watermark image - instant
+            document.getElementById('watermark-image').addEventListener('input', updateWatermark);
+
+            // Watermark position - instant
+            document.getElementById('watermark-position').addEventListener('change', updateWatermark);
+
+            // Watermark opacity - instant
+            const opacitySlider = document.getElementById('watermark-opacity');
+            const opacityValue = document.getElementById('opacity-value');
+            opacitySlider.addEventListener('input', (e) => {
+                opacityValue.textContent = Math.round(e.target.value * 100) + '%';
+                updateWatermark();
+            });
+
+            // Anti-Piracy Text controls
+            document.getElementById('antipiracy-enabled').addEventListener('change', updateAntiPiracyText);
+            document.getElementById('antipiracy-text').addEventListener('input', updateAntiPiracyText);
+            document.getElementById('antipiracy-color').addEventListener('input', updateAntiPiracyText);
+
+            const antipiracyOpacitySlider = document.getElementById('antipiracy-opacity');
+            const antipiracyOpacityValue = document.getElementById('antipiracy-opacity-value');
+            antipiracyOpacitySlider.addEventListener('input', (e) => {
+                antipiracyOpacityValue.textContent = Math.round(e.target.value * 100) + '%';
+                updateAntiPiracyText();
+            });
+
+            // Quality filter controls - checkboxes
+            document.querySelectorAll('.quality-checkboxes input[type="checkbox"]').forEach(cb => {
+                cb.addEventListener('change', updateQualityFilter);
+            });
+            document.getElementById('show-auto-quality').addEventListener('change', updateQualityFilter);
+
+            // Playback speed
+            document.getElementById('playback-speed').addEventListener('change', (e) => {
+                if (activePlayer) {
+                    activePlayer.setPlaybackRate(parseFloat(e.target.value));
+                }
+            });
+
+            // Volume
+            const volumeSlider = document.getElementById('volume');
+            const volumeValue = document.getElementById('volume-value');
+            volumeSlider.addEventListener('input', (e) => {
+                const value = parseFloat(e.target.value);
+                volumeValue.textContent = Math.round(value * 100) + '%';
+                if (activePlayer) {
+                    activePlayer.setVolume(value);
+                }
+            });
+
+            // Apply changes button (kept for backwards compatibility)
+            document.getElementById('apply-changes').addEventListener('click', () => {
+                updateWatermark();
+                console.log('Configuration applied');
+            });
+
+            // Add chapters button
+            document.getElementById('add-chapters').addEventListener('click', () => {
+                if (!activePlayer) return;
+
+                activePlayer.setChapters([
+                    { id: '1', title: 'Introduction', startTime: 0 },
+                    { id: '2', title: 'Getting Started', startTime: 30 },
+                    { id: '3', title: 'Main Content', startTime: 90 },
+                    { id: '4', title: 'Advanced Topics', startTime: 180 },
+                    { id: '5', title: 'Conclusion', startTime: 300 }
+                ]);
+
+                console.log('Chapters added to player');
+            });
+
+            // Reset button
+            document.getElementById('reset-player').addEventListener('click', () => {
+                location.reload();
+            });
+        });
+    </script>
+</body>
+</html>

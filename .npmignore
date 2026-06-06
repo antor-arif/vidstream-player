@@ -1,0 +1,33 @@
+# Source files
+src/
+public/
+*.ts
+!dist/**/*.d.ts
+
+# Development files
+index.html
+vite.config.ts
+tsconfig.json
+tsconfig.node.json
+.eslintrc.js
+.gitignore
+
+# Node modules
+node_modules/
+
+# Development README (npm will use README.npm.md copied to README.md)
+README.npm.md
+
+# IDE
+.vscode/
+.idea/
+
+# Build artifacts
+*.log
+*.tsbuildinfo
+
+# Test files
+__tests__/
+*.test.ts
+*.spec.ts
+coverage/

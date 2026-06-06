@@ -1,0 +1,110 @@
+{
+  "name": "vidstream-player",
+  "version": "1.0.0",
+  "description": "Production-ready video player SDK — HLS, DASH, React, Vue, Angular, Web Component, config-driven theming, playlist sidebar, chapters, PiP, mini player, volume animation, touch gestures, auto-resume, progress tracking, analytics plugin, full TypeScript",
+  "main": "dist/player.umd.js",
+  "module": "dist/player.esm.js",
+  "types": "dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/player.esm.js",
+      "require": "./dist/player.umd.js"
+    },
+    "./webcomponent": {
+      "types": "./dist/types/webcomponent.d.ts",
+      "import": "./dist/player.webcomponent.js"
+    },
+    "./react": {
+      "types": "./dist/types/react-wrapper.d.ts",
+      "import": "./dist/react-wrapper.js",
+      "require": "./dist/react-wrapper.js",
+      "default": "./dist/react-wrapper.js"
+    },
+    "./styles": {
+      "types": "./dist/types/styles.d.ts",
+      "default": "./dist/player.css"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "node scripts/build.js",
+    "preview": "vite preview",
+    "lint": "eslint src --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit",
+    "prepack": "",
+    "postpack": "",
+    "publish:npm": "npm run build && npm publish --access public"
+  },
+  "keywords": [
+    "video-player",
+    "hls-player",
+    "dash-player",
+    "react-video-player",
+    "vue-video-player",
+    "angular-video-player",
+    "web-component-video-player",
+    "adaptive-streaming",
+    "hls",
+    "dash",
+    "streaming",
+    "vod-player",
+    "live-streaming-player",
+    "e-learning",
+    "playlist-player",
+    "chapters",
+    "picture-in-picture",
+    "mini-player",
+    "touch-gestures",
+    "auto-resume",
+    "analytics",
+    "typescript",
+    "customizable-video-player",
+    "video-sdk",
+    "web-component",
+    "react",
+    "vue",
+    "angular",
+    "hlsjs",
+    "dashjs"
+  ],
+  "author": "Md. Arifur Rahman",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/react": "^18.2.45",
+    "@types/react-dom": "^18.2.18",
+    "@typescript-eslint/eslint-plugin": "^6.14.0",
+    "@typescript-eslint/parser": "^6.14.0",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.10",
+    "vite-plugin-dts": "^3.7.0"
+  },
+  "dependencies": {
+    "@vidstack/react": "^1.10.0",
+    "dashjs": "^5.2.0",
+    "hls.js": "^1.4.14",
+    "vidstack": "^1.10.0"
+  },
+  "peerDependencies": {
+    "react": ">=17.0.0",
+    "react-dom": ">=17.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/antor-arif/vidstream-player.git"
+  }
+}
