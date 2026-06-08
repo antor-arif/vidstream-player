@@ -27,7 +27,6 @@ import type {
   QualityLevel,
   SubtitleTrack,
   GesturesConfig,
-  ResumeConfig,
   ErrorRecoveryConfig,
   PipConfig,
   MiniPlayerConfig,
@@ -70,7 +69,6 @@ export interface VideoPlayerProps {
 
   // New feature props
   gestures?: GesturesConfig;
-  resume?: ResumeConfig;
   errorRecovery?: ErrorRecoveryConfig;
   pip?: PipConfig;
   miniPlayer?: MiniPlayerConfig;
@@ -155,7 +153,6 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
       playbackRate,
       debug = false,
       gestures,
-      resume,
       errorRecovery,
       pip,
       miniPlayer,
@@ -213,7 +210,6 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
         playbackRate,
         debug,
         gestures,
-        resume,
         errorRecovery,
         pip,
         miniPlayer,

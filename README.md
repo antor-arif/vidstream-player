@@ -2,7 +2,7 @@
 
 **The last video player you'll ever need.**
 
-A production-ready, framework-agnostic video player SDK with adaptive streaming, fully configurable theming, playlists, chapters, Picture-in-Picture, mini player, touch gestures, auto-resume, progress tracking, an analytics plugin interface, and full TypeScript support — all in one package.
+A production-ready, framework-agnostic video player SDK with adaptive streaming, fully configurable theming, playlists, chapters, Picture-in-Picture, mini player, touch gestures, progress tracking, an analytics plugin interface, and full TypeScript support — all in one package.
 
 [![npm version](https://img.shields.io/npm/v/vidstream-player?color=%23e50914&style=flat-square)](https://www.npmjs.com/package/vidstream-player)
 [![npm downloads](https://img.shields.io/npm/dm/vidstream-player?style=flat-square)](https://www.npmjs.com/package/vidstream-player)
@@ -25,7 +25,6 @@ Most video players do one thing. This one does everything.
 | Picture-in-Picture + floating mini player | ✅ Built-in |
 | Mobile touch gestures | ✅ Built-in |
 | Volume animation feedback | ✅ Icon + bar + percentage |
-| Auto-resume from last position | ✅ Built-in |
 | Analytics plugin slot | ✅ Built-in |
 | Progress tracking + milestones | ✅ Built-in |
 | React wrapper + hooks | ✅ Built-in |
@@ -49,7 +48,6 @@ No extra dependencies. No stitching together five libraries. Import, configure, 
 - **Mini / floating player** — scroll past the video and the entire player snaps to a fixed corner; click to scroll back; click × to dismiss. Works by repositioning the whole container — no video-element cloning or sync issues
 - **Touch gestures** — double-tap to seek, swipe right-half up/down for volume, long-press for speed boost
 - **Volume animation** — any volume change (swipe or `↑`/`↓` key) shows a volume icon + percentage + fill-bar overlay that fades out after 1.5 s
-- **Auto-resume** — saves position to `localStorage`, optional prompt on return
 - **Error recovery** — exponential-backoff retry with configurable max attempts
 - **Progress tracking** — milestone events (25 / 50 / 75 / 100 %), completion callback, periodic save with localStorage and API helpers
 - **Analytics plugin** — drop in any provider via a simple `init(player)` interface; exposes a full event bus (`on/off/once`)
@@ -410,21 +408,6 @@ player.togglePip();  // browser-native PiP
 
 ---
 
-## Auto-Resume
-
-```ts
-{
-  resume: {
-    enabled:      true,
-    storageKey:   'my-app-resume',
-    promptUser:   true,   // show resume dialog (false = seek silently)
-    minWatchTime: 10,     // only resume if viewer watched > 10 s
-  },
-}
-```
-
----
-
 ## Error Recovery
 
 ```ts
@@ -617,7 +600,6 @@ import type {
   PlayerTheme,          // theme config object
   PlayerState,
   GesturesConfig,
-  ResumeConfig,
   ErrorRecoveryConfig,
   PipConfig,
   MiniPlayerConfig,
@@ -815,7 +797,6 @@ const config: PlayerConfig = {
   pip:           { enabled: true },
   miniPlayer:    { enabled: true, position: 'bottom-right', width: 320 },
   gestures:      { enabled: true, doubleTapSeek: 10, swipeVolume: true, longPressSpeed: true },
-  resume:        { enabled: true, storageKey: 'my-app-v1', promptUser: true },
   errorRecovery: { maxRetries: 5, retryDelay: 2000 },
 
   // Branding

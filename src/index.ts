@@ -34,7 +34,6 @@ export { Icons, createIcon } from './components/Icons';
 
 export { EventBus } from './services/eventBus';
 export { ErrorRecoveryManager } from './services/errorRecovery';
-export { saveResume, loadResume, clearResume, showResumePrompt } from './services/resumeService';
 export { ThumbnailPreview } from './components/ThumbnailPreview';
 export { MiniPlayer } from './components/MiniPlayer';
 export { PlaylistManager } from './components/PlaylistManager';
@@ -127,7 +126,6 @@ export type {
 
   // New features
   GesturesConfig,
-  ResumeConfig,
   ErrorRecoveryConfig,
   VidstreamError,
   VidstreamErrorCode,

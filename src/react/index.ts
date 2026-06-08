@@ -37,7 +37,6 @@ export type {
   LMSProgressData,
   VidstreamPlayerInstance,
   GesturesConfig,
-  ResumeConfig,
   ErrorRecoveryConfig,
   PipConfig,
   MiniPlayerConfig,

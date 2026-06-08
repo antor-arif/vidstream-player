@@ -148,21 +148,6 @@ export interface GesturesConfig {
 }
 
 // ============================================================================
-// AUTO-RESUME TYPES
-// ============================================================================
-
-export interface ResumeConfig {
-  /** Opt-in. Default: false */
-  enabled?: boolean;
-  /** Custom localStorage key prefix */
-  storageKey?: string;
-  /** Show resume dialog. Default: true */
-  promptUser?: boolean;
-  /** Min watch time (s) before saving. Default: 5 */
-  minWatchTime?: number;
-}
-
-// ============================================================================
 // ERROR RECOVERY TYPES
 // ============================================================================
 
@@ -470,8 +455,6 @@ export interface PlayerConfig {
   thumbnailVtt?: string;
   /** Touch gesture config */
   gestures?: GesturesConfig;
-  /** Auto-resume playback config (client-side, opt-in) */
-  resume?: ResumeConfig;
   /** Smart error recovery config */
   errorRecovery?: ErrorRecoveryConfig;
   /** Picture-in-Picture config */

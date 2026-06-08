@@ -150,6 +150,20 @@ export const playlistStyles = `
     border-left: 1px solid rgba(255,255,255,0.08);
   }
 
+  @media (max-width: 640px) {
+    .vp-layout-wrapper {
+      flex-direction: column;
+    }
+
+    .vp-playlist-panel {
+      width: 100%;
+      min-width: 0;
+      max-height: 240px;
+      border-left: none;
+      border-top: 1px solid rgba(255,255,255,0.08);
+    }
+  }
+
   .vp-playlist-header {
     padding: 14px 16px 10px;
     font-size: 12px;

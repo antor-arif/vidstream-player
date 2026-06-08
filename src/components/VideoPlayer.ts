@@ -29,7 +29,6 @@ import { AnalyticsManager } from '../services/analyticsAdapter';
 import { LMSProgressManager, saveProgressToStorage } from '../services/lmsProgressService';
 import { EventBus } from '../services/eventBus';
 import { ErrorRecoveryManager } from '../services/errorRecovery';
-import { saveResume, loadResume, clearResume, showResumePrompt, resumePromptStyles } from '../services/resumeService';
 import { ThumbnailPreview, thumbnailPreviewStyles } from './ThumbnailPreview';
 import { MiniPlayer, miniPlayerStyles } from './MiniPlayer';
 import { PlaylistManager, playlistStyles } from './PlaylistManager';
@@ -100,7 +99,6 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   private state: PlayerState = this.getInitialState();
   private isInitialized = false;
   private qualityLevels: QualityLevel[] = [];
-  private resumeSaveTimer: ReturnType<typeof setInterval> | null = null;
   private _sessionId: string = uuidV4();
   private currentChapterIndex = -1;
   private seekFromTime = 0;
@@ -193,7 +191,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     if (document.getElementById('vp-extra-styles')) return;
     const style = document.createElement('style');
     style.id = 'vp-extra-styles';
-    style.textContent = resumePromptStyles + thumbnailPreviewStyles + miniPlayerStyles + playlistStyles;
+    style.textContent = thumbnailPreviewStyles + miniPlayerStyles + playlistStyles;
     document.head.appendChild(style);
   }
 
@@ -358,10 +356,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       this.emitEvent('player-loaded', {});
       this.analyticsManager?.trackEvent('source_loaded', this.getAnalyticsState());
 
-      // Auto-resume (standalone, not LMS)
-      if (this.config.resume?.enabled) {
-        this.handleResume();
-      } else if (this.lmsProgressManager?.shouldResume()) {
+      if (this.lmsProgressManager?.shouldResume()) {
         this.seek(this.lmsProgressManager.getResumePosition());
       } else if (this.config.startTime) {
         this.seek(this.config.startTime);
@@ -388,8 +383,6 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       this.analyticsManager?.startHeartbeat(() => this.getAnalyticsState());
       this.lmsProgressManager?.handleFirstPlay();
 
-      // Start resume save timer
-      if (this.config.resume?.enabled) this.startResumeSaveTimer();
     });
 
     video.addEventListener('pause', () => {
@@ -414,12 +407,6 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       this.eventBus.emit('ended', { src: video.src, sessionId: this._sessionId });
       this.analyticsManager?.trackEvent('ended', this.getAnalyticsState());
       this.lmsProgressManager?.handleCompletion();
-
-      // Clear resume position on completion
-      if (this.config.resume?.enabled) {
-        clearResume(this.config.source.src, this.config.resume);
-        this.stopResumeSaveTimer();
-      }
 
       // Auto-advance playlist
       const opts = this.config.playlistOptions;
@@ -556,45 +543,6 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       ) return;
       this.togglePlay();
     });
-  }
-
-  // ============================================================================
-  // RESUME
-  // ============================================================================
-
-  private async handleResume(): Promise<void> {
-    const resumeCfg = this.config.resume!;
-    const data = loadResume(this.config.source.src, resumeCfg);
-    if (!data) return;
-
-    const pct = data.time / data.duration;
-    if (data.time < (resumeCfg.minWatchTime ?? 5) || pct > 0.95) return;
-
-    if (resumeCfg.promptUser !== false) {
-      const resume = await showResumePrompt(this.container, data.time);
-      if (resume) this.seek(data.time);
-      // Explicitly start playback — click propagation is stopped in the prompt
-      // so the container click handler won't fire. We start play here instead.
-      await this.play();
-    } else {
-      this.seek(data.time);
-    }
-  }
-
-  private startResumeSaveTimer(): void {
-    if (this.resumeSaveTimer) return;
-    this.resumeSaveTimer = setInterval(() => {
-      if (this.videoElement && this.state.playing && this.config.resume?.enabled) {
-        saveResume(this.config.source.src, this.videoElement.currentTime, this.state.duration, this.config.resume);
-      }
-    }, 5000);
-  }
-
-  private stopResumeSaveTimer(): void {
-    if (this.resumeSaveTimer) {
-      clearInterval(this.resumeSaveTimer);
-      this.resumeSaveTimer = null;
-    }
   }
 
   // ============================================================================
@@ -1155,7 +1103,6 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   // ============================================================================
 
   destroy(): void {
-    this.stopResumeSaveTimer();
     this.analyticsManager?.endSession(this.getAnalyticsState());
     this.analyticsManager?.destroy();
     this.lmsProgressManager?.saveProgress();
