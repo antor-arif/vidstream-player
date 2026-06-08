@@ -1280,7 +1280,7 @@ export class ControlsManager {
         const chapter = this.chapters[i];
         const segEnd = this.chapters[i + 1]?.startTime ?? duration;
         const segDur = segEnd - chapter.startTime;
-        const fill = segment.firstElementChild as HTMLElement | null;
+        const fill = segment.children[1] as HTMLElement | null;
         if (fill && segDur > 0) {
           const pct = Math.min(1, Math.max(0, (currentTime - chapter.startTime) / segDur)) * 100;
           fill.style.width = `${pct}%`;
@@ -1545,8 +1545,8 @@ export class ControlsManager {
     this.lastKnownDuration = state.duration;
     this.currentState = state;
 
-    // Render chapter markers once duration becomes available for the first time
-    if (state.duration > 0 && wasDuration === 0 && this.chapters.length > 0) {
+    // Render chapter markers whenever duration changes
+    if (state.duration > 0 && state.duration !== wasDuration && this.chapters.length > 0) {
       this.renderChapterMarkers();
     }
 
@@ -1613,10 +1613,19 @@ export class ControlsManager {
           const chapter = this.chapters[i];
           const segEnd = this.chapters[i + 1]?.startTime ?? state.duration;
           const segDur = segEnd - chapter.startTime;
-          const fill = segment.firstElementChild as HTMLElement | null;
-          if (fill && segDur > 0) {
-            const pct = Math.min(1, Math.max(0, (state.currentTime - chapter.startTime) / segDur)) * 100;
-            fill.style.width = `${pct}%`;
+          
+          const bufferEl = segment.children[0] as HTMLElement | null;
+          const fillEl = segment.children[1] as HTMLElement | null;
+
+          if (segDur > 0) {
+            if (bufferEl) {
+              const bufferPct = Math.min(1, Math.max(0, (state.buffered - chapter.startTime) / segDur)) * 100;
+              bufferEl.style.width = `${bufferPct}%`;
+            }
+            if (fillEl) {
+              const fillPct = Math.min(1, Math.max(0, (state.currentTime - chapter.startTime) / segDur)) * 100;
+              fillEl.style.width = `${fillPct}%`;
+            }
           }
         });
       } else if (this.progressFilled) {
@@ -1785,6 +1794,10 @@ export class ControlsManager {
       segment.className = 'vp-chapter-segment';
       segment.style.flexGrow = String(segDuration / duration);
       segment.dataset.chapterIndex = String(i);
+
+      const buffer = document.createElement('div');
+      buffer.className = 'vp-chapter-segment-buffer';
+      segment.appendChild(buffer);
 
       const fill = document.createElement('div');
       fill.className = 'vp-chapter-segment-fill';

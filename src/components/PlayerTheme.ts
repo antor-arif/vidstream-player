@@ -717,7 +717,21 @@ export function getBaseStyles(): string {
       height: 6px;
     }
 
+    .vp-chapter-segment-buffer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100%;
+      width: 0%;
+      background: rgba(255, 255, 255, 0.4);
+      border-radius: 2px;
+      transition: width 0.1s ease;
+    }
+
     .vp-chapter-segment-fill {
+      position: absolute;
+      top: 0;
+      left: 0;
       height: 100%;
       width: 0%;
       background: var(--vp-accent-color);

@@ -15,6 +15,8 @@ export interface VideoSource {
   poster?: string;
   /** URL to WebVTT sprite sheet for seek thumbnails */
   thumbnails?: string;
+  /** Chapters for this specific source */
+  chapters?: Chapter[];
 }
 
 // ============================================================================

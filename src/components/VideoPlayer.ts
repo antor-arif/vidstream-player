@@ -309,8 +309,8 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
         src: item.src,
         title: item.title,
         poster: item.poster,
+        chapters: item.chapters,
       };
-      if (item.chapters?.length) this.controlsManager?.updateChapters(this.normalizeChapters(item.chapters));
       if (item.thumbnailVtt) this.loadThumbnailVtt(item.thumbnailVtt);
       this.loadSource(source);
 
@@ -684,6 +684,12 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
         if (track.default) trackEl.default = true;
         this.videoElement!.appendChild(trackEl);
       });
+    }
+
+    if (source.chapters) {
+      this.setChapters(source.chapters);
+    } else {
+      this.setChapters([]);
     }
   }
 
@@ -1135,7 +1141,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     this.eventBus.destroy();
 
     if (this.hls) { this.hls.destroy(); this.hls = null; }
-    if (this.dash) { this.dash.reset(); this.dash = null; }
+    try { if (this.dash) { this.dash.destroy(); this.dash = null; } } catch(e) {}
 
     if (this.videoElement) {
       this.videoElement.pause();
