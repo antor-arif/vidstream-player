@@ -29,13 +29,13 @@ async function runBuild() {
         },
       },
       rollupOptions: {
-        external: ['react', 'react-dom'],
+        external: ['react', 'react-dom', 'hls.js', 'dashjs'],
         output: {
           exports: 'named',
         },
       },
       minify: 'esbuild',
-      sourcemap: true,
+      sourcemap: false,
       cssCodeSplit: false,
     },
   });
@@ -61,17 +61,19 @@ async function runBuild() {
         fileName: () => 'player.umd.js',
       },
       rollupOptions: {
-        external: ['react', 'react-dom'],
+        external: ['react', 'react-dom', 'hls.js', 'dashjs'],
         output: {
           globals: {
             'react': 'React',
             'react-dom': 'ReactDOM',
+            'hls.js': 'Hls',
+            'dashjs': 'dashjs',
           },
           exports: 'named',
         },
       },
       minify: 'esbuild',
-      sourcemap: true,
+      sourcemap: false,
       cssCodeSplit: false,
     },
   });

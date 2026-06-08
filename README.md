@@ -68,6 +68,23 @@ yarn add vidstream-player
 pnpm add vidstream-player
 ```
 
+### Peer dependencies
+
+`hls.js` and `dashjs` are **optional peer dependencies** — install whichever streaming formats you need:
+
+```bash
+# For HLS (.m3u8) streams
+npm install hls.js
+
+# For DASH (.mpd) streams
+npm install dashjs
+
+# Both
+npm install hls.js dashjs
+```
+
+If you only serve MP4 or WebM, you don't need either. The player lazy-loads them only when a matching source is played.
+
 ---
 
 ## Quick start
@@ -385,9 +402,27 @@ player.goTo(2);   // jump to index
 
 The mini player activates automatically via `IntersectionObserver` when the player scrolls out of view. The **entire player container** (video + controls) is repositioned to a fixed corner of the screen — no element cloning or sync issues. Click the mini player body to scroll back to the original position. Click × to dismiss permanently.
 
+In mini player mode, controls are automatically reduced to **Play/Pause + Mute + Fullscreen** so they fit in the compact overlay without crowding.
+
 ```ts
 player.togglePip();  // browser-native PiP
 ```
+
+---
+
+## Responsive / container scaling
+
+The player uses a `ResizeObserver` to watch its **container width** — not the viewport — so it adapts correctly whether it is full-width, embedded in a sidebar, or rendered inside a narrow column.
+
+| Container width | CSS class | Controls hidden |
+|----------------|-----------|----------------|
+| ≥ 720 px | _(none)_ | All shown |
+| 560–719 px | `vp-size-lg` | — |
+| 400–559 px | `vp-size-md` | Volume slider, PiP, speed/quality labels |
+| 280–399 px | `vp-size-sm` | + Time display, rewind/forward, chapters/subtitles dropdowns |
+| < 280 px | `vp-size-xs` | All non-essential controls hidden |
+
+This is the same mechanism used internally for the mini player. Because it uses container width rather than `@media` viewport queries, it works correctly when the player is embedded in any layout — grid, flex, sidebar, modal, or full-page.
 
 ---
 
@@ -729,12 +764,17 @@ player.destroy()
 
 | Chunk | Size (gzip) | Loaded when |
 |-------|------------|-------------|
-| Core player | ~38 kB | Always |
+| Core player (ESM) | ~38 kB | Always |
 | React wrapper | ~2.4 kB | React only |
-| HLS engine | ~195 kB | HLS source provided |
-| DASH engine | ~282 kB | DASH source provided |
+| UMD bundle | ~34 kB | UMD consumers |
+| hls.js (peer dep) | ~195 kB | HLS source played |
+| dashjs (peer dep) | ~282 kB | DASH source played |
 
-HLS.js and dash.js are **never loaded** unless the viewer plays that stream type. A pure MP4 deployment ships ~38 kB gzipped.
+`hls.js` and `dashjs` are **peer dependencies** — they are NOT bundled into `vidstream-player`. Install them separately only if you use HLS or DASH. They are lazy-loaded at runtime and add **nothing** to your initial bundle.
+
+A pure MP4 deployment ships ~38 kB gzipped with zero streaming overhead.
+
+> **Previous behavior (< 1.0):** Both were bundled into the package, inflating the install size to ~11 MB with source maps. The current approach reduces the published package to ~400 KB.
 
 ---
 

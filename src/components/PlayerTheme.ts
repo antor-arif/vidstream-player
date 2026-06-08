@@ -126,17 +126,14 @@ export class ThemeManager {
    * Inject base CSS styles
    */
   private injectBaseStyles(): void {
-    // Check if styles already exist
-    const existingStyle = document.getElementById('video-player-styles');
-    if (existingStyle) {
-      this.styleElement = existingStyle as HTMLStyleElement;
-      return;
+    let styleEl = document.getElementById('video-player-styles') as HTMLStyleElement | null;
+    if (!styleEl) {
+      styleEl = document.createElement('style');
+      styleEl.id = 'video-player-styles';
+      document.head.appendChild(styleEl);
     }
-
-    this.styleElement = document.createElement('style');
-    this.styleElement.id = 'video-player-styles';
-    this.styleElement.textContent = getBaseStyles();
-    document.head.appendChild(this.styleElement);
+    this.styleElement = styleEl;
+    styleEl.textContent = getBaseStyles();
   }
 
   /**
@@ -693,16 +690,22 @@ export function getBaseStyles(): string {
     .vp-progress--chaptered {
       display: flex;
       align-items: center;
-      gap: 2px;
+      gap: 3px;
       background: transparent !important;
       overflow: visible;
+    }
+
+    /* Hide the buffer and filled overlays — segment fills replace them */
+    .vp-progress--chaptered .vp-progress-buffer,
+    .vp-progress--chaptered .vp-progress-filled {
+      display: none !important;
     }
 
     .vp-chapter-segment {
       position: relative;
       flex-shrink: 0;
-      height: 3px;
-      background: rgba(255, 255, 255, 0.25);
+      height: 4px;
+      background: rgba(255, 255, 255, 0.28);
       border-radius: 2px;
       overflow: hidden;
       transition: height 0.1s ease, border-radius 0.1s ease;
@@ -710,7 +713,7 @@ export function getBaseStyles(): string {
 
     .vp-progress-container:hover .vp-progress--chaptered .vp-chapter-segment,
     .video-player-container.vp-dragging .vp-progress--chaptered .vp-chapter-segment {
-      height: 5px;
+      height: 6px;
     }
 
     .vp-chapter-segment-fill {
@@ -1272,6 +1275,71 @@ export function getBaseStyles(): string {
       .vp-progress-container {
         padding: 6px 0 2px;
       }
+    }
+
+    /* =====================================================
+       CONTAINER-SIZE RESPONSIVE (JS ResizeObserver classes)
+       These fire based on the player's actual pixel width,
+       not the viewport — so embedded players work correctly.
+       ===================================================== */
+
+    /* Medium container: 400–560px */
+    .video-player-container.vp-size-md .vp-volume-slider-wrapper,
+    .video-player-container.vp-size-md .vp-btn-pip {
+      display: none;
+    }
+    .video-player-container.vp-size-md .vp-speed-label,
+    .video-player-container.vp-size-md .vp-quality-label {
+      display: none;
+    }
+    .video-player-container.vp-size-md .vp-control-btn {
+      padding: 6px;
+    }
+
+    /* Small container: 280–400px */
+    .video-player-container.vp-size-sm .vp-volume-slider-wrapper,
+    .video-player-container.vp-size-sm .vp-time,
+    .video-player-container.vp-size-sm .vp-btn-rewind,
+    .video-player-container.vp-size-sm .vp-btn-forward,
+    .video-player-container.vp-size-sm .vp-btn-pip,
+    .video-player-container.vp-size-sm .vp-dropdown-wrapper[data-dropdown="chapters"],
+    .video-player-container.vp-size-sm .vp-dropdown-wrapper[data-dropdown="subtitles"] {
+      display: none;
+    }
+    .video-player-container.vp-size-sm .vp-speed-label,
+    .video-player-container.vp-size-sm .vp-quality-label {
+      display: none;
+    }
+    .video-player-container.vp-size-sm .vp-controls {
+      padding: 0 8px 8px;
+    }
+    .video-player-container.vp-size-sm .vp-control-btn {
+      padding: 5px;
+    }
+
+    /* Extra-small container: < 280px */
+    .video-player-container.vp-size-xs .vp-controls {
+      padding: 0 4px 4px;
+      gap: 2px;
+    }
+    .video-player-container.vp-size-xs .vp-volume-slider-wrapper,
+    .video-player-container.vp-size-xs .vp-time,
+    .video-player-container.vp-size-xs .vp-btn-rewind,
+    .video-player-container.vp-size-xs .vp-btn-forward,
+    .video-player-container.vp-size-xs .vp-btn-pip,
+    .video-player-container.vp-size-xs .vp-live-badge,
+    .video-player-container.vp-size-xs .vp-dropdown-wrapper[data-dropdown="chapters"],
+    .video-player-container.vp-size-xs .vp-dropdown-wrapper[data-dropdown="subtitles"],
+    .video-player-container.vp-size-xs .vp-dropdown-wrapper[data-dropdown="speed"],
+    .video-player-container.vp-size-xs .vp-dropdown-wrapper[data-dropdown="quality"] {
+      display: none;
+    }
+    .video-player-container.vp-size-xs .vp-control-btn {
+      padding: 4px;
+    }
+    .video-player-container.vp-size-xs .vp-btn-play .vp-btn-inner svg {
+      width: 20px;
+      height: 20px;
     }
 
     /* Error Display */

@@ -188,11 +188,13 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   }
 
   private injectExtraStyles(): void {
-    if (document.getElementById('vp-extra-styles')) return;
-    const style = document.createElement('style');
-    style.id = 'vp-extra-styles';
+    let style = document.getElementById('vp-extra-styles') as HTMLStyleElement | null;
+    if (!style) {
+      style = document.createElement('style');
+      style.id = 'vp-extra-styles';
+      document.head.appendChild(style);
+    }
     style.textContent = thumbnailPreviewStyles + miniPlayerStyles + playlistStyles;
-    document.head.appendChild(style);
   }
 
   private createVideoElement(): void {
@@ -324,6 +326,10 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       const wrapper = document.createElement('div');
       wrapper.className = 'vp-layout-wrapper';
       this.container.parentElement?.insertBefore(wrapper, this.container);
+      // Mark the host element as the flex item so CSS can target it correctly.
+      // The flex child is this.container (the <video-player> element), not the
+      // inner .video-player-container, so we need an explicit class hook.
+      this.container.classList.add('vp-playlist-host');
       wrapper.appendChild(this.container);
       wrapper.appendChild(panel);
     }

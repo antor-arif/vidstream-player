@@ -130,29 +130,42 @@ export const playlistStyles = `
   .vp-layout-wrapper {
     display: flex;
     flex-direction: row;
-    align-items: stretch;
+    align-items: flex-start;
     width: 100%;
   }
 
-  .vp-layout-wrapper .video-player-container {
-    flex: 1;
-    min-width: 0;
+  /*
+   * The direct flex child is the host element (<video-player> custom element),
+   * not the inner .video-player-container.  We add .vp-playlist-host to the
+   * host in VideoPlayer.ts so this rule targets the correct flex item.
+   */
+  .vp-playlist-host {
+    flex: 1 1 0% !important;
+    min-width: 0 !important;
+    width: 0 !important;   /* flex-basis:0 + flex-grow:1 handles sizing */
+    max-width: 100%;
   }
 
   .vp-playlist-panel {
     width: 280px;
     min-width: 280px;
-    max-height: 100%;
     background: rgba(18,18,18,0.97);
     overflow-y: auto;
     scrollbar-width: thin;
     scrollbar-color: rgba(255,255,255,0.2) transparent;
     border-left: 1px solid rgba(255,255,255,0.08);
+    /* Match the height of the player (determined by the host's aspect-ratio) */
+    align-self: stretch;
   }
 
   @media (max-width: 640px) {
     .vp-layout-wrapper {
       flex-direction: column;
+    }
+
+    .vp-playlist-host {
+      flex: none !important;
+      width: 100% !important;
     }
 
     .vp-playlist-panel {
@@ -161,6 +174,7 @@ export const playlistStyles = `
       max-height: 240px;
       border-left: none;
       border-top: 1px solid rgba(255,255,255,0.08);
+      align-self: auto;
     }
   }
 

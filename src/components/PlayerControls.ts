@@ -132,6 +132,9 @@ export class ControlsManager {
   private prevBtn: HTMLElement | null = null;
   private nextBtn: HTMLElement | null = null;
 
+  // Container size observer
+  private sizeObserver: ResizeObserver | null = null;
+
   // Data
   private qualityLevels: QualityLevel[] = [];
   private subtitleTracks: SubtitleTrack[] = [];
@@ -168,6 +171,21 @@ export class ControlsManager {
 
     // Show controls initially
     this.showControls();
+
+    // Container-size responsive classes
+    this.sizeObserver = new ResizeObserver(([entry]) => {
+      this.updateSizeClass(entry.contentRect.width);
+    });
+    this.sizeObserver.observe(this.container);
+    this.updateSizeClass(this.container.getBoundingClientRect().width);
+  }
+
+  private updateSizeClass(width: number): void {
+    this.container.classList.remove('vp-size-xs', 'vp-size-sm', 'vp-size-md', 'vp-size-lg');
+    if (width < 280) this.container.classList.add('vp-size-xs');
+    else if (width < 400) this.container.classList.add('vp-size-sm');
+    else if (width < 560) this.container.classList.add('vp-size-md');
+    else if (width < 720) this.container.classList.add('vp-size-lg');
   }
 
   private createTitleElement(): void {
@@ -396,16 +414,16 @@ export class ControlsManager {
 
     // Rewind button
     if (this.config.rewind) {
-      leftGroup.appendChild(
-        this.createButton('rewind10', `Rewind ${this.config.seekDuration}s`, () => this.callbacks.onRewind())
-      );
+      const rewindBtn = this.createButton('rewind10', `Rewind ${this.config.seekDuration}s`, () => this.callbacks.onRewind());
+      rewindBtn.classList.add('vp-btn-rewind');
+      leftGroup.appendChild(rewindBtn);
     }
 
     // Forward button
     if (this.config.forward) {
-      leftGroup.appendChild(
-        this.createButton('forward10', `Forward ${this.config.seekDuration}s`, () => this.callbacks.onForward())
-      );
+      const forwardBtn = this.createButton('forward10', `Forward ${this.config.seekDuration}s`, () => this.callbacks.onForward());
+      forwardBtn.classList.add('vp-btn-forward');
+      leftGroup.appendChild(forwardBtn);
     }
 
     // Volume control
@@ -477,12 +495,14 @@ export class ControlsManager {
       this.pipBtn = this.createButton('pip', 'Picture-in-Picture', () => {
         this.callbacks.onPipToggle();
       });
+      this.pipBtn.classList.add('vp-btn-pip');
       rightGroup.appendChild(this.pipBtn);
     }
 
     // Fullscreen button
     if (this.config.fullscreen) {
       this.fullscreenBtn = this.createButton('fullscreen', 'Fullscreen', () => this.callbacks.onFullscreenToggle());
+      this.fullscreenBtn.classList.add('vp-btn-fullscreen');
       rightGroup.appendChild(this.fullscreenBtn);
     }
 
@@ -1787,6 +1807,7 @@ export class ControlsManager {
    * Destroy controls
    */
   destroy(): void {
+    this.sizeObserver?.disconnect();
     if (this.hideControlsTimer) clearTimeout(this.hideControlsTimer);
     if (this.tapTimer) clearTimeout(this.tapTimer);
     if (this.longPressTimer) clearTimeout(this.longPressTimer);

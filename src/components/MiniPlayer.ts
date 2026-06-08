@@ -198,4 +198,47 @@ export const miniPlayerStyles = `
     height: 16px;
     pointer-events: none;
   }
+
+  /* Mini player — keep only play/pause, mute, fullscreen */
+  .video-player-container.vp-mini-active .vp-controls {
+    padding: 0 6px 6px;
+    gap: 2px;
+  }
+
+  .video-player-container.vp-mini-active .vp-progress-container {
+    padding: 6px 0 2px;
+  }
+
+  .video-player-container.vp-mini-active .vp-btn-rewind,
+  .video-player-container.vp-mini-active .vp-btn-forward,
+  .video-player-container.vp-mini-active .vp-volume-slider-wrapper,
+  .video-player-container.vp-mini-active .vp-time,
+  .video-player-container.vp-mini-active .vp-btn-pip,
+  .video-player-container.vp-mini-active .vp-btn-prev,
+  .video-player-container.vp-mini-active .vp-btn-next,
+  .video-player-container.vp-mini-active .vp-live-badge,
+  .video-player-container.vp-mini-active .vp-dropdown-wrapper[data-dropdown="chapters"],
+  .video-player-container.vp-mini-active .vp-dropdown-wrapper[data-dropdown="subtitles"],
+  .video-player-container.vp-mini-active .vp-dropdown-wrapper[data-dropdown="speed"],
+  .video-player-container.vp-mini-active .vp-dropdown-wrapper[data-dropdown="quality"] {
+    display: none !important;
+  }
+
+  .video-player-container.vp-mini-active .vp-speed-label,
+  .video-player-container.vp-mini-active .vp-quality-label {
+    display: none;
+  }
+
+  .video-player-container.vp-mini-active .vp-control-btn {
+    padding: 5px;
+  }
+
+  .video-player-container.vp-mini-active .vp-btn-play .vp-btn-inner svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .video-player-container.vp-mini-active .vp-gradient-bottom {
+    height: 100px;
+  }
 `;
