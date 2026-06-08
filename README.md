@@ -181,7 +181,7 @@ import type { PlayerConfig } from 'vidstream-player';
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `source` | `VideoSource` | — | **Required.** `{ src, type, title?, poster? }` |
+| `source` | `VideoSource` | — | **Required.** `{ src, type, title?, poster?, chapters? }` |
 | `mode` | `'vod' \| 'live'` | `'vod'` | VOD shows full controls; live hides seek bar and speed |
 | `theme` | `PlayerTheme` | defaults | Brand colors, radius, font, logo — see Theming |
 | `autoplay` | `boolean` | `false` | Autoplay on load (subject to browser policy) |
@@ -344,7 +344,7 @@ When `showPanel: true`, a 280 px sidebar is automatically rendered **to the righ
 ```ts
 {
   playlist: [
-    { src: 'https://cdn.example.com/ep1.m3u8', title: 'Episode 1', poster: '...', duration: 1440 },
+    { src: 'https://cdn.example.com/ep1.m3u8', title: 'Episode 1', poster: '...', duration: 1440, chapters: [{ id: '1', title: 'Intro', startTime: 0, endTime: 120 }] },
     { src: 'https://cdn.example.com/ep2.m3u8', title: 'Episode 2', poster: '...' },
   ],
   playlistOptions: {
