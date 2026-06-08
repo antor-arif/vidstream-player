@@ -67,7 +67,6 @@ export class ThemeManager {
   private container: HTMLElement;
   private currentTheme: PlayerTheme;
   private mode: PlayerMode;
-  private styleElement: HTMLStyleElement | null = null;
 
   constructor(container: HTMLElement, theme: PlayerTheme = defaultDarkTheme, mode: PlayerMode = 'vod') {
     this.container = container;
@@ -132,7 +131,7 @@ export class ThemeManager {
       styleEl.id = 'video-player-styles';
       document.head.appendChild(styleEl);
     }
-    this.styleElement = styleEl;
+
     styleEl.textContent = getBaseStyles();
   }
 
@@ -1139,6 +1138,11 @@ export function getBaseStyles(): string {
       }
 
       .vp-volume-slider-wrapper {
+        display: none;
+      }
+
+      .vp-btn-rewind,
+      .vp-btn-forward {
         display: none;
       }
 

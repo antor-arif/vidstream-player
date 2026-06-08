@@ -1264,8 +1264,33 @@ export class ControlsManager {
   private doProgressSeek(e: MouseEvent): void {
     if (!this.progressBar) return;
     const rect = this.progressBar.getBoundingClientRect();
-    const pos = (e.clientX - rect.left) / rect.width;
-    this.callbacks.onSeek(Math.max(0, Math.min(1, pos)));
+    const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    this.callbacks.onSeek(pos);
+    this.updateProgressFromPos(pos);
+  }
+
+  private updateProgressFromPos(pos: number): void {
+    const percentage = pos * 100;
+    const duration = this.currentState?.duration ?? 0;
+    const currentTime = pos * duration;
+
+    if (this.chapterSegments.length > 0) {
+      this.chapterSegments.forEach((segment, i) => {
+        const chapter = this.chapters[i];
+        const segEnd = this.chapters[i + 1]?.startTime ?? duration;
+        const segDur = segEnd - chapter.startTime;
+        const fill = segment.firstElementChild as HTMLElement | null;
+        if (fill && segDur > 0) {
+          const pct = Math.min(1, Math.max(0, (currentTime - chapter.startTime) / segDur)) * 100;
+          fill.style.width = `${pct}%`;
+        }
+      });
+    } else if (this.progressFilled) {
+      this.progressFilled.style.width = `${percentage}%`;
+    }
+    if (this.progressThumb) {
+      this.progressThumb.style.left = `${percentage}%`;
+    }
   }
 
   /**
@@ -1292,6 +1317,7 @@ export class ControlsManager {
     const rect = this.progressBar.getBoundingClientRect();
     const pos = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
     this.callbacks.onSeek(pos);
+    this.updateProgressFromPos(pos);
   }
 
   /**
@@ -1304,6 +1330,7 @@ export class ControlsManager {
     const rect = this.progressBar.getBoundingClientRect();
     const pos = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
     this.callbacks.onSeek(pos);
+    this.updateProgressFromPos(pos);
   }
 
   /**
@@ -1345,6 +1372,7 @@ export class ControlsManager {
       const rect = this.progressBar.getBoundingClientRect();
       const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
       this.callbacks.onSeek(pos);
+      this.updateProgressFromPos(pos);
     }
 
     if (this.isDraggingVolume && this.volumeSlider) {
