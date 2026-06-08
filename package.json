@@ -1,6 +1,6 @@
 {
   "name": "vidstream-player",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Production-ready video player SDK — HLS, DASH, React, Vue, Angular, Web Component, config-driven theming, playlist sidebar, chapters, PiP, mini player, volume animation, touch gestures, auto-resume, progress tracking, analytics plugin, full TypeScript",
   "main": "dist/player.umd.js",
   "module": "dist/player.esm.js",
