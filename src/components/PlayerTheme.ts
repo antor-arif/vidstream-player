@@ -598,23 +598,24 @@ export function getBaseStyles(): string {
       transition: opacity 0.15s ease;
       pointer-events: none;
       margin-bottom: 8px;
+      font-size: 13px;
+      font-weight: 500;
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 1px;
+      gap: 4px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
     }
 
     .vp-tooltip-chapter {
-      font-size: 11px;
-      font-weight: 500;
-      color: rgba(255, 255, 255, 0.75);
-      line-height: 1.2;
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
     }
 
     .vp-tooltip-time {
       font-size: 12px;
-      font-weight: 600;
-      line-height: 1.2;
+      color: rgba(255, 255, 255, 0.8);
     }
 
     .vp-progress-tooltip.visible {

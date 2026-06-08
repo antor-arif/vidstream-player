@@ -322,13 +322,18 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
 
     if (this.config.playlistOptions?.showPanel) {
       const panel = this.playlistManager.buildPanel();
-      // Wrap player + panel in a flex row so the panel appears to the right
       const wrapper = document.createElement('div');
       wrapper.className = 'vp-layout-wrapper';
+
+      // Transfer any inline width from the player to the wrapper so the wrapper
+      // takes the intended outer size, and the player can be a flex item inside it.
+      const inlineWidth = this.container.style.width;
+      if (inlineWidth) {
+        wrapper.style.width = inlineWidth;
+        this.container.style.removeProperty('width');
+      }
+
       this.container.parentElement?.insertBefore(wrapper, this.container);
-      // Mark the host element as the flex item so CSS can target it correctly.
-      // The flex child is this.container (the <video-player> element), not the
-      // inner .video-player-container, so we need an explicit class hook.
       this.container.classList.add('vp-playlist-host');
       wrapper.appendChild(this.container);
       wrapper.appendChild(panel);
@@ -359,6 +364,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       this.state.isLive = !isFinite(video.duration);
       this.lmsProgressManager?.initialize(video.duration);
       this.controlsManager?.updateLiveState(this.state.isLive);
+      this.updateState();
       this.emitEvent('player-loaded', {});
       this.analyticsManager?.trackEvent('source_loaded', this.getAnalyticsState());
 
@@ -636,8 +642,13 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   loadSource(source: VideoSource): void {
     if (!this.videoElement) return;
 
-    if (this.hls) { this.hls.destroy(); this.hls = null; }
-    if (this.dash) { this.dash.reset(); this.dash = null; }
+    try {
+      if (this.hls) { this.hls.destroy(); this.hls = null; }
+    } catch (e) { console.error('[VideoPlayer] Error destroying HLS:', e); }
+    
+    try {
+      if (this.dash) { this.dash.destroy(); this.dash = null; }
+    } catch (e) { console.error('[VideoPlayer] Error destroying Dash:', e); }
 
     this.container.querySelector('.vp-error')?.remove();
     this.errorRecovery?.resetRetries();

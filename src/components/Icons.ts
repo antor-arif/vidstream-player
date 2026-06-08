@@ -109,6 +109,14 @@ export const Icons = {
   chapters: `<svg viewBox="0 0 24 24" fill="currentColor">
     <path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/>
   </svg>`,
+
+  next: `<svg viewBox="0 0 24 24" fill="currentColor">
+    <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+  </svg>`,
+
+  prev: `<svg viewBox="0 0 24 24" fill="currentColor">
+    <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
+  </svg>`,
 };
 
 /**

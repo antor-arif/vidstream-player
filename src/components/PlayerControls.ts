@@ -101,6 +101,7 @@ export class ControlsManager {
   private titleElement: HTMLElement | null = null;
 
   private currentState: PlayerState | null = null;
+  private lastKnownDuration: number = 0;
   private isDraggingProgress = false;
   private isDraggingVolume = false;
   private progressMouseDownTime = 0;
@@ -389,7 +390,7 @@ export class ControlsManager {
 
     // Playlist prev button — hidden until playlist is set
     if (this.config.playlist) {
-      this.prevBtn = this.createButton('rewind10', 'Previous', () => this.callbacks.onPlaylistPrev?.());
+      this.prevBtn = this.createButton('prev', 'Previous', () => this.callbacks.onPlaylistPrev?.());
       this.prevBtn.classList.add('vp-btn-prev');
       this.prevBtn.style.display = 'none';
       leftGroup.appendChild(this.prevBtn);
@@ -406,7 +407,7 @@ export class ControlsManager {
 
     // Playlist next button — hidden until playlist is set
     if (this.config.playlist) {
-      this.nextBtn = this.createButton('forward10', 'Next', () => this.callbacks.onPlaylistNext?.());
+      this.nextBtn = this.createButton('next', 'Next', () => this.callbacks.onPlaylistNext?.());
       this.nextBtn.classList.add('vp-btn-next');
       this.nextBtn.style.display = 'none';
       leftGroup.appendChild(this.nextBtn);
@@ -1540,7 +1541,8 @@ export class ControlsManager {
     const wasPlaying = this.currentState?.playing;
     const wasPaused = this.currentState?.paused;
     const wasFullscreen = this.currentState?.fullscreen;
-    const wasDuration = this.currentState?.duration ?? 0;
+    const wasDuration = this.lastKnownDuration;
+    this.lastKnownDuration = state.duration;
     this.currentState = state;
 
     // Render chapter markers once duration becomes available for the first time
@@ -1695,16 +1697,15 @@ export class ControlsManager {
   updatePlaylistButtons(hasPrev: boolean, hasNext: boolean): void {
     if (this.prevBtn) {
       this.prevBtn.style.display = hasPrev ? '' : 'none';
-      // Use chevronLeft icon for prev
       const inner = this.prevBtn.querySelector('.vp-btn-inner');
-      if (inner) inner.innerHTML = Icons.chevronLeft;
+      if (inner) inner.innerHTML = Icons.prev;
       this.prevBtn.setAttribute('aria-label', 'Previous video');
       this.prevBtn.setAttribute('title', 'Previous video');
     }
     if (this.nextBtn) {
       this.nextBtn.style.display = hasNext ? '' : 'none';
       const inner = this.nextBtn.querySelector('.vp-btn-inner');
-      if (inner) inner.innerHTML = Icons.chevronRight;
+      if (inner) inner.innerHTML = Icons.next;
       this.nextBtn.setAttribute('aria-label', 'Next video');
       this.nextBtn.setAttribute('title', 'Next video');
     }
