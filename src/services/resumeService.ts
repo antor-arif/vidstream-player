@@ -1,2 +1,0 @@
-// Resume feature removed.
-export {};
