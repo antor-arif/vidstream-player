@@ -15,18 +15,27 @@ export class ErrorRecoveryManager {
     };
   }
 
+  isEnabled(): boolean {
+    return this.config.enabled;
+  }
+
   canRetry(): boolean {
     return this.config.enabled && this.retryCount < this.config.maxRetries;
   }
 
-  /** Call on a non-fatal network/segment error. Returns delay in ms before caller should retry. */
+  /** Schedule `retryFn` after an exponential backoff (retryDelay × 2^attempt). Replaces any pending retry. */
   scheduleRetry(retryFn: () => void): void {
     if (!this.canRetry()) return;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
     const delay = this.config.retryDelay * Math.pow(2, this.retryCount);
     this.retryCount++;
-    this.retryTimer = setTimeout(retryFn, delay);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      retryFn();
+    }, delay);
   }
 
+  /** Refill the retry budget and cancel any pending retry (call after playback recovers or the source changes). */
   resetRetries(): void {
     this.retryCount = 0;
     if (this.retryTimer) {
@@ -37,7 +46,11 @@ export class ErrorRecoveryManager {
 
   reportError(code: VidstreamErrorCode, message: string, fatal: boolean): VidstreamError {
     const err: VidstreamError = { code, message, fatal, timestamp: Date.now() };
-    this.config.onError(err);
+    try {
+      this.config.onError(err);
+    } catch (error) {
+      console.error('[VideoPlayer] errorRecovery.onError threw:', error);
+    }
     return err;
   }
 

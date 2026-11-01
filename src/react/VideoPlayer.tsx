@@ -52,9 +52,12 @@ export interface VideoPlayerProps {
   antiPiracyText?: AntiPiracyTextConfig;
   quality?: QualityConfig;
   controls?: ControlsConfig;
+  /** Read once on mount */
   analytics?: AnalyticsConfig;
+  /** Read once on mount */
   lmsProgress?: LMSProgressConfig;
   security?: SecurityConfig;
+  /** Read once on mount */
   sdkAuth?: SDKAuthConfig;
   subtitles?: SubtitleTrack[];
   chapters?: Chapter[];
@@ -63,6 +66,7 @@ export interface VideoPlayerProps {
   loop?: boolean;
   preload?: 'none' | 'metadata' | 'auto';
   keyboardShortcuts?: boolean;
+  /** Read once on mount */
   startTime?: number;
   playbackRate?: number;
   debug?: boolean;
@@ -76,6 +80,7 @@ export interface VideoPlayerProps {
   playlistOptions?: PlaylistOptions;
   thumbnailVtt?: string;
   chaptersVtt?: string;
+  /** Read once on mount */
   plugins?: PluginsConfig;
 
   className?: string;
@@ -87,12 +92,14 @@ export interface VideoPlayerProps {
   onPause?: () => void;
   onEnded?: () => void;
   onTimeUpdate?: (currentTime: number, duration: number) => void;
+  onSeek?: (from: number, to: number) => void;
   onVolumeChange?: (volume: number, muted: boolean) => void;
   onFullscreenChange?: (fullscreen: boolean) => void;
   onPipChange?: (pip: boolean) => void;
   onQualityChange?: (quality: QualityLevel) => void;
   onError?: (event: Event) => void;
   onBuffering?: (buffering: boolean) => void;
+  /** Fires with the latest PlayerState on every player event */
   onStateChange?: (state: PlayerState) => void;
   onChapterChange?: (event: CustomEvent) => void;
   onPlaylistChange?: (event: CustomEvent) => void;
@@ -125,163 +132,176 @@ export interface VideoPlayerRef extends PlayerAPI {
 export type VidstreamPlayerRef = VideoPlayerRef;
 
 // ============================================================================
+// CONFIG SYNC HELPERS
+// ============================================================================
+
+/** Props that can change after mount and are forwarded through updateConfig() */
+const SYNCED_KEYS = [
+  'mode', 'theme', 'watermark', 'antiPiracyText', 'quality', 'controls', 'security',
+  'subtitles', 'chapters', 'autoplay', 'muted', 'loop', 'preload', 'keyboardShortcuts',
+  'playbackRate', 'debug', 'gestures', 'errorRecovery', 'pip', 'miniPlayer',
+  'playlist', 'playlistOptions', 'thumbnailVtt', 'chaptersVtt',
+] as const;
+
+type SyncedConfig = Partial<Pick<PlayerConfig, typeof SYNCED_KEYS[number]>>;
+
+function buildConfig(props: VideoPlayerProps): PlayerConfig {
+  return {
+    source: props.source,
+    mode: props.mode ?? 'vod',
+    theme: props.theme,
+    watermark: props.watermark,
+    antiPiracyText: props.antiPiracyText,
+    quality: props.quality,
+    controls: props.controls,
+    analytics: props.analytics,
+    lmsProgress: props.lmsProgress,
+    security: props.security,
+    sdkAuth: props.sdkAuth,
+    subtitles: props.subtitles,
+    chapters: props.chapters,
+    autoplay: props.autoplay ?? false,
+    muted: props.muted ?? false,
+    loop: props.loop ?? false,
+    preload: props.preload ?? 'metadata',
+    keyboardShortcuts: props.keyboardShortcuts ?? true,
+    startTime: props.startTime,
+    playbackRate: props.playbackRate,
+    debug: props.debug ?? false,
+    gestures: props.gestures,
+    errorRecovery: props.errorRecovery,
+    pip: props.pip,
+    miniPlayer: props.miniPlayer,
+    playlist: props.playlist,
+    playlistOptions: props.playlistOptions,
+    thumbnailVtt: props.thumbnailVtt,
+    chaptersVtt: props.chaptersVtt,
+    plugins: props.plugins,
+  };
+}
+
+function pickSynced(config: PlayerConfig): SyncedConfig {
+  const picked: Record<string, unknown> = {};
+  SYNCED_KEYS.forEach(key => { picked[key] = config[key]; });
+  return picked as SyncedConfig;
+}
+
+/**
+ * Structural equality for config values, so inline objects (`theme={{ … }}`) don't trigger an
+ * update on every render. Functions compare equal: callbacks inside config objects are read
+ * when the relevant feature is (re)built, not on every prop change.
+ */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a === 'function' && typeof b === 'function') return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const aKeys = Object.keys(a as object);
+  const bKeys = Object.keys(b as object);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every(key => sameValue((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
+}
+
+function sourceKey(source: VideoSource): string {
+  return JSON.stringify([source.src, source.type ?? 'auto', source.poster, source.title, source.thumbnails, source.chapters]);
+}
+
+// ============================================================================
 // COMPONENT
 // ============================================================================
 
 export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
   (props, ref) => {
-    const {
-      source,
-      mode = 'vod',
-      theme,
-      watermark,
-      antiPiracyText,
-      quality,
-      controls,
-      analytics,
-      lmsProgress,
-      security,
-      sdkAuth,
-      subtitles,
-      chapters,
-      autoplay = false,
-      muted = false,
-      loop = false,
-      preload = 'metadata',
-      keyboardShortcuts = true,
-      startTime,
-      playbackRate,
-      debug = false,
-      gestures,
-      errorRecovery,
-      pip,
-      miniPlayer,
-      playlist,
-      playlistOptions,
-      thumbnailVtt,
-      chaptersVtt,
-      plugins,
-      className,
-      style,
-      onReady,
-      onPlay,
-      onPause,
-      onEnded,
-      onTimeUpdate,
-      onVolumeChange,
-      onFullscreenChange,
-      onPipChange,
-      onQualityChange,
-      onError,
-      onBuffering,
-      onStateChange,
-      onChapterChange,
-      onPlaylistChange,
-    } = props;
+    const { className, style } = props;
 
     const elementRef = useRef<VideoPlayerElement | null>(null);
+    // Latest props for event handlers and effects without re-subscribing every render
+    const propsRef = useRef(props);
+    propsRef.current = props;
+    const lastSynced = useRef<SyncedConfig | null>(null);
+    const lastSourceKey = useRef<string | null>(null);
     const [isInitialized, setIsInitialized] = useState(false);
 
-    // Build config and initialize once
-    useEffect(() => {
-      const element = elementRef.current;
-      if (!element || isInitialized) return;
-
-      const config: PlayerConfig = {
-        source,
-        mode,
-        theme,
-        watermark,
-        antiPiracyText,
-        quality,
-        controls,
-        analytics,
-        lmsProgress,
-        security,
-        sdkAuth,
-        subtitles,
-        chapters,
-        autoplay,
-        muted,
-        loop,
-        preload,
-        keyboardShortcuts,
-        startTime,
-        playbackRate,
-        debug,
-        gestures,
-        errorRecovery,
-        pip,
-        miniPlayer,
-        playlist,
-        playlistOptions,
-        thumbnailVtt,
-        chaptersVtt,
-        plugins,
-      } as PlayerConfig;
-
-      element.initialize(config);
-      setIsInitialized(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-
-    // Sync config changes
-    useEffect(() => {
-      const element = elementRef.current;
-      if (!element || !isInitialized) return;
-      element.updateConfig({ mode, theme, watermark, antiPiracyText, controls });
-    }, [mode, theme, watermark, antiPiracyText, controls, isInitialized]);
-
-    // Reload source when src changes
-    useEffect(() => {
-      const element = elementRef.current;
-      if (!element || !isInitialized) return;
-      element.loadSource(source);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [source.src, source.type, isInitialized]);
-
-    // DOM event listeners
+    // Listen first, then initialize — `player-ready` is dispatched synchronously while the
+    // player is constructed, so listeners attached afterwards would miss it.
     useEffect(() => {
       const element = elementRef.current;
       if (!element) return;
 
-      const handlers: Record<string, (e: CustomEvent) => void> = {
-        'player-ready': () => onReady?.(),
-        'player-play': () => onPlay?.(),
-        'player-pause': () => onPause?.(),
-        'player-ended': () => onEnded?.(),
-        'player-timeupdate': (e) => {
-          const { currentTime, duration } = e.detail?.data ?? {};
-          onTimeUpdate?.(currentTime, duration);
-          if (e.detail?.state) onStateChange?.(e.detail.state);
-        },
-        'player-volumechange': (e) => {
-          const { volume, muted: isMuted } = e.detail?.data ?? {};
-          onVolumeChange?.(volume, isMuted);
-        },
-        'player-fullscreen': (e) => onFullscreenChange?.(e.detail?.data?.fullscreen),
-        'player-pip': (e) => onPipChange?.(e.detail?.data?.pip),
-        'player-quality-change': (e) => onQualityChange?.(e.detail?.data),
-        'player-error': (e) => onError?.(e as unknown as Event),
-        'player-buffering': (e) => onBuffering?.(e.detail?.data?.buffering),
-        'player-chapter-change': (e) => onChapterChange?.(e),
-        'player-playlist-change': (e) => onPlaylistChange?.(e),
+      const call = (fn: (p: VideoPlayerProps, e: CustomEvent) => void) => (event: Event) => {
+        const e = event as CustomEvent;
+        if (e.detail?.state) propsRef.current.onStateChange?.(e.detail.state);
+        fn(propsRef.current, e);
       };
 
-      Object.entries(handlers).forEach(([event, handler]) => {
-        element.addEventListener(event, handler as EventListener);
-      });
+      const handlers: Record<string, (event: Event) => void> = {
+        'player-ready': call(p => p.onReady?.()),
+        'player-play': call(p => p.onPlay?.()),
+        'player-pause': call(p => p.onPause?.()),
+        'player-ended': call(p => p.onEnded?.()),
+        'player-timeupdate': call((p, e) => {
+          const { currentTime, duration } = e.detail?.data ?? {};
+          p.onTimeUpdate?.(currentTime, duration);
+        }),
+        'player-seek': call((p, e) => p.onSeek?.(e.detail?.data?.from, e.detail?.data?.to)),
+        'player-volumechange': call((p, e) => {
+          const { volume, muted: isMuted } = e.detail?.data ?? {};
+          p.onVolumeChange?.(volume, isMuted);
+        }),
+        'player-fullscreen': call((p, e) => p.onFullscreenChange?.(e.detail?.data?.fullscreen)),
+        'player-pip': call((p, e) => p.onPipChange?.(e.detail?.data?.pip)),
+        'player-quality-change': call((p, e) => p.onQualityChange?.(e.detail?.data)),
+        'player-error': call((p, e) => p.onError?.(e)),
+        'player-buffering': call((p, e) => p.onBuffering?.(e.detail?.data?.buffering)),
+        'player-chapter-change': call((p, e) => p.onChapterChange?.(e)),
+        'player-playlist-change': call((p, e) => p.onPlaylistChange?.(e)),
+        'player-loaded': call(() => {}),
+        'player-ratechange': call(() => {}),
+      };
+
+      Object.entries(handlers).forEach(([event, handler]) => element.addEventListener(event, handler));
+
+      // StrictMode re-runs this effect on the same element; the element keeps its player
+      if (!element.isReady()) {
+        const config = buildConfig(propsRef.current);
+        element.initialize(config);
+        lastSynced.current = pickSynced(config);
+        lastSourceKey.current = sourceKey(config.source);
+      }
+      setIsInitialized(true);
 
       return () => {
-        Object.entries(handlers).forEach(([event, handler]) => {
-          element.removeEventListener(event, handler as EventListener);
-        });
+        Object.entries(handlers).forEach(([event, handler]) => element.removeEventListener(event, handler));
       };
-    }, [
-      onReady, onPlay, onPause, onEnded, onTimeUpdate, onVolumeChange,
-      onFullscreenChange, onPipChange, onQualityChange, onError, onBuffering,
-      onStateChange, onChapterChange, onPlaylistChange,
-    ]);
+    }, []);
+
+    // Forward changed props after mount (structural comparison, so inline objects are fine)
+    useEffect(() => {
+      const element = elementRef.current;
+      if (!element || !isInitialized || !lastSynced.current) return;
+
+      const next = pickSynced(buildConfig(props));
+      const changed: SyncedConfig = {};
+      let hasChanges = false;
+      SYNCED_KEYS.forEach(key => {
+        if (!sameValue(lastSynced.current![key], next[key])) {
+          (changed as Record<string, unknown>)[key] = next[key];
+          hasChanges = true;
+        }
+      });
+      lastSynced.current = next;
+      if (hasChanges) element.updateConfig(changed);
+    });
+
+    // Reload when the source actually changes (not on the initial mount — initialize() loaded it)
+    useEffect(() => {
+      const element = elementRef.current;
+      if (!element || !isInitialized) return;
+      const key = sourceKey(props.source);
+      if (key === lastSourceKey.current) return;
+      lastSourceKey.current = key;
+      element.loadSource(props.source);
+    });
 
     // Expose imperative API
     useImperativeHandle(
@@ -304,7 +324,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
         exitPip: () => elementRef.current?.exitPip() ?? Promise.resolve(),
         togglePip: () => elementRef.current?.togglePip(),
         // Quality / Subtitles
-        setQuality: (q: QualityLevel | 'auto') => elementRef.current?.setQuality(q),
+        setQuality: (q: QualityLevel | number | 'auto') => elementRef.current?.setQuality(q),
         setSubtitle: (track: SubtitleTrack | null) => elementRef.current?.setSubtitle(track),
         // State
         getState: () => elementRef.current?.getState() ?? emptyState(),
@@ -335,11 +355,18 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
       []
     );
 
-    return React.createElement('video-player', {
-      ref: elementRef,
-      class: className,
-      style,
-    });
+    // The display:contents host gives React a node it owns. The player may wrap <video-player>
+    // in a layout element (playlist panel); React then only ever removes this host, never the
+    // re-parented element, so unmounting can't fail with "removeChild: not a child".
+    return React.createElement(
+      'div',
+      { style: { display: 'contents' }, 'data-vidstream-host': '' },
+      React.createElement('video-player', {
+        ref: elementRef,
+        class: className,
+        style,
+      })
+    );
   }
 );
 
@@ -370,8 +397,13 @@ export function usePlayerState(playerRef: React.RefObject<VideoPlayerRef>) {
       if (detail?.state) setState(detail.state);
     };
 
-    const events = ['player-play', 'player-pause', 'player-timeupdate', 'player-volumechange', 'player-fullscreen', 'player-pip'];
+    const events = [
+      'player-play', 'player-pause', 'player-ended', 'player-timeupdate', 'player-volumechange',
+      'player-ratechange', 'player-fullscreen', 'player-pip', 'player-buffering', 'player-loaded',
+      'player-quality-change', 'player-seek',
+    ];
     events.forEach(ev => element.addEventListener(ev, handleStateChange));
+    setState(element.getState());
     return () => events.forEach(ev => element.removeEventListener(ev, handleStateChange));
   }, [playerRef]);
 

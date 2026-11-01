@@ -1,8 +1,13 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'path';
+import pkg from './package.json';
 
+// Dev server for the root index.html demo page (the library build lives in scripts/build.js)
 export default defineConfig({
   root: '.',
+  define: {
+    __VIDSTREAM_VERSION__: JSON.stringify(pkg.version),
+  },
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src'),

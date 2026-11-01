@@ -110,6 +110,7 @@ export interface PlayerTheme {
 export interface ControlsConfig {
   playPause?: boolean;
   seekBar?: boolean;
+  /** Alias of `seekBar` — the progress bar is hidden when either is false */
   progress?: boolean;
   currentTime?: boolean;
   duration?: boolean;
@@ -125,8 +126,10 @@ export interface ControlsConfig {
   forward?: boolean;
   rewind?: boolean;
   liveIndicator?: boolean;
+  /** Reserved for a future settings menu — currently has no effect */
   settings?: boolean;
   chapters?: boolean;
+  /** Seconds skipped by the rewind/forward buttons and arrow keys. Default: 10 */
   seekDuration?: number;
   playlist?: boolean;
 }
@@ -136,16 +139,16 @@ export interface ControlsConfig {
 // ============================================================================
 
 export interface GesturesConfig {
-  /** Default: true on touch devices, false on desktop */
+  /** Touch gestures (long-press speed, swipe volume). They only ever fire on touch input. Default: true */
   enabled?: boolean;
-  /** Seconds to seek on double-tap. Default: 10. Alias: seekSeconds */
+  /** Seconds to seek on double-tap. Default: controls.seekDuration (10). Alias: seekSeconds */
   doubleTapSeek?: number;
   seekSeconds?: number;
   /** Enable double-tap left/right zones. Default: true */
   doubleTapZones?: boolean;
   /** Enable swipe up/down on right half for volume. Default: true */
   swipeVolume?: boolean;
-  /** Speed on long press. true = 2×, number = custom multiplier. Default: 2 */
+  /** Speed on long press. true = 2×, number = custom multiplier, false = disabled. Default: 2 */
   longPressSpeed?: boolean | number;
 }
 
@@ -153,7 +156,13 @@ export interface GesturesConfig {
 // ERROR RECOVERY TYPES
 // ============================================================================
 
-export type VidstreamErrorCode = 'NETWORK_ERROR' | 'DECODE_ERROR' | 'SRC_NOT_SUPPORTED' | 'STREAM_ENDED';
+export type VidstreamErrorCode =
+  | 'NETWORK_ERROR'
+  | 'DECODE_ERROR'
+  | 'SRC_NOT_SUPPORTED'
+  | 'STREAM_ENDED'
+  /** Playback authorization failed (401/403, signed-URL or sdkAuth failure) */
+  | 'AUTH_ERROR';
 
 export interface VidstreamError {
   code: VidstreamErrorCode;
@@ -197,6 +206,8 @@ export interface MiniPlayerConfig {
 
 export interface PlaylistItem {
   src: string;
+  /** Source type. Default: 'auto' (detected from the URL extension) */
+  type?: VideoSourceType;
   title?: string;
   poster?: string;
   duration?: number;
@@ -211,7 +222,10 @@ export interface PlaylistOptions {
   loop?: boolean;
   /** Show playlist sidebar panel. Default: false */
   showPanel?: boolean;
-  /** Starting index. Default: 0 */
+  /**
+   * Item to start with. When set, that item is loaded instead of `config.source`.
+   * When omitted, `config.source` plays and the matching playlist item (if any) is highlighted.
+   */
   startIndex?: number;
 }
 
@@ -393,15 +407,32 @@ export interface LMSProgressConfig {
 // ============================================================================
 
 export interface SecurityConfig {
+  /** Called with every source URL before it is loaded; resolve to the signed URL to play */
   getSignedPlaybackUrl?: (originalUrl: string) => Promise<string>;
+  /**
+   * Called once when a manifest/segment request is rejected (HTTP 401/403) or signing fails.
+   * Resolve to a new token; playback is then retried with it.
+   */
   refreshPlaybackToken?: () => Promise<string>;
+  /** Called when playback authorization fails and cannot be recovered */
   onPlaybackAuthorizationError?: (error: Error) => void | Promise<void>;
+  /**
+   * Header used to send `authToken` with HLS/DASH requests. Default: 'Authorization' (value `Bearer <token>`).
+   * With a custom header name the raw token is sent. Native MP4/WebM playback cannot send headers.
+   */
   tokenHeaderName?: string;
+  /** Token sent with every HLS/DASH manifest and segment request */
   authToken?: string;
 }
 
+/**
+ * Client-side SDK licensing checks. Enforced in the browser only — a deterrent, not a security boundary.
+ * When a check fails the source is not loaded, `onAuthError` is called and an AUTH_ERROR is emitted.
+ */
 export interface SDKAuthConfig {
+  /** Must be a non-empty string */
   apiKey: string;
+  /** Hostnames allowed to embed the player: "example.com", "*.example.com" (apex + subdomains), "*" */
   allowedDomains?: string[];
   onAuthError?: (error: Error) => void;
 }
@@ -506,8 +537,11 @@ export interface PlayerState {
 }
 
 export interface PlayerError {
+  /** A VidstreamErrorCode ('NETWORK_ERROR', 'DECODE_ERROR', 'SRC_NOT_SUPPORTED', 'STREAM_ENDED', 'AUTH_ERROR') */
   code: string;
   message: string;
+  /** false while the player is still retrying; true once playback has stopped */
+  fatal?: boolean;
   originalError?: Error;
 }
 
@@ -562,7 +596,8 @@ export interface PlayerAPI {
   enterPip(): Promise<void>;
   exitPip(): Promise<void>;
   togglePip(): void;
-  setQuality(quality: QualityLevel | 'auto'): void;
+  /** Accepts a QualityLevel, a height in pixels (e.g. 720) or 'auto' */
+  setQuality(quality: QualityLevel | number | 'auto'): void;
   setSubtitle(track: SubtitleTrack | null): void;
   getState(): PlayerState;
   loadSource(source: VideoSource): void;
@@ -582,7 +617,8 @@ export interface VidstreamPlayerInstance {
   setVolume(level: number): void;
   setMuted(muted: boolean): void;
   setSpeed(rate: number): void;
-  setQuality(level: number | 'auto'): void;
+  /** Accepts a height in pixels (e.g. 720), a QualityLevel or 'auto' */
+  setQuality(level: QualityLevel | number | 'auto'): void;
 
   // State getters
   getCurrentTime(): number;

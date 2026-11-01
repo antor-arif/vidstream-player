@@ -1,12 +1,9 @@
 /**
- * Player Controls Component - Fixed Version
- * 
- * This module provides the video player controls UI with fixes for:
- * - Play/pause toggle functionality
- * - Chapters support
- * - Responsive dropdowns
- * - Working quality/subtitle/settings menus
- * - Improved UI
+ * Player Controls Component
+ *
+ * Control bar, progress bar with chapter segments, dropdown menus (speed / quality /
+ * subtitles / chapters), keyboard shortcuts, touch gestures and auto-hide behaviour.
+ * Talks to the player only through ControlsCallbacks.
  */
 
 import type { ControlsConfig, PlayerState, QualityLevel, SubtitleTrack, Chapter, GesturesConfig } from '../types';
@@ -61,7 +58,16 @@ export interface ControlsCallbacks {
   onChapterSeek?: (chapter: Chapter) => void;
   onPlaylistNext?: () => void;
   onPlaylistPrev?: () => void;
+  /** Relative seek in seconds (double-tap gestures). Falls back to onForward/onRewind when absent. */
+  onSeekBy?: (seconds: number) => void;
 }
+
+export interface ControlsOptions {
+  /** Keyboard shortcuts (space/k, arrows, f, m, c). Default: true */
+  keyboardShortcuts?: boolean;
+}
+
+const EDITABLE_SELECTOR = 'input, textarea, select, [contenteditable=""], [contenteditable="true"]';
 
 /**
  * Manages video player controls
@@ -136,6 +142,12 @@ export class ControlsManager {
   // Container size observer
   private sizeObserver: ResizeObserver | null = null;
 
+  // Every listener is registered with this signal so destroy() removes them all
+  private listeners = new AbortController();
+  private keyboardShortcuts = true;
+  private actionTimer: ReturnType<typeof setTimeout> | null = null;
+  private speedFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+
   // Data
   private qualityLevels: QualityLevel[] = [];
   private subtitleTracks: SubtitleTrack[] = [];
@@ -149,12 +161,24 @@ export class ControlsManager {
     container: HTMLElement,
     config: ControlsConfig,
     callbacks: ControlsCallbacks,
-    gesturesConfig?: GesturesConfig
+    gesturesConfig?: GesturesConfig,
+    options: ControlsOptions = {}
   ) {
     this.container = container;
     this.config = { ...defaultControlsConfig, ...config };
     this.callbacks = callbacks;
     if (gesturesConfig) this.gesturesConfig = gesturesConfig;
+    this.keyboardShortcuts = options.keyboardShortcuts !== false;
+  }
+
+  /** Shorthand for addEventListener bound to this manager's lifetime */
+  private listen<K extends keyof HTMLElementEventMap>(
+    target: HTMLElement | Document,
+    type: K,
+    handler: (e: HTMLElementEventMap[K]) => void,
+    options: AddEventListenerOptions = {}
+  ): void {
+    target.addEventListener(type, handler as EventListener, { ...options, signal: this.listeners.signal });
   }
 
   /**
@@ -234,7 +258,9 @@ export class ControlsManager {
     this.actionIndicator.classList.add('animate');
     
     // Remove class after animation completes
-    setTimeout(() => {
+    if (this.actionTimer) clearTimeout(this.actionTimer);
+    this.actionTimer = setTimeout(() => {
+      this.actionTimer = null;
       this.actionIndicator?.classList.remove('animate');
     }, 500);
   }
@@ -243,8 +269,7 @@ export class ControlsManager {
    * Show seek feedback with accumulated count — multiple rapid seeks stack up like YouTube.
    * Left shows "-Xs", right shows "+Xs". Resets the opposite side on direction change.
    */
-  private showSeekFeedback(direction: 'left' | 'right'): void {
-    const secs = this.config.seekDuration ?? 10;
+  private showSeekFeedback(direction: 'left' | 'right', secs: number = this.config.seekDuration ?? 10): void {
     const opposite = direction === 'left' ? 'right' : 'left';
 
     // Reset opposite side counter
@@ -292,10 +317,14 @@ export class ControlsManager {
 
     const el = document.createElement('div');
     el.className = 'vp-speed-feedback';
-    el.innerHTML = `<span>${Icons.speed}</span><span>${speed}x</span>`;
+    el.innerHTML = `<span>${Icons.speed}</span><span>${Number(speed)}x</span>`;
     this.container.appendChild(el);
     requestAnimationFrame(() => el.classList.add('active'));
-    setTimeout(() => el.remove(), 1500);
+    if (this.speedFeedbackTimer) clearTimeout(this.speedFeedbackTimer);
+    this.speedFeedbackTimer = setTimeout(() => {
+      this.speedFeedbackTimer = null;
+      el.remove();
+    }, 1500);
   }
 
   private showVolumeFeedback(volume: number, muted = false): void {
@@ -375,8 +404,8 @@ export class ControlsManager {
     // Force visible on creation
     this.controlsElement.classList.add('visible');
     
-    // Progress container (above control buttons)
-    if (this.config.seekBar) {
+    // Progress container (above control buttons). `progress` is an alias of `seekBar`.
+    if (this.config.seekBar && this.config.progress) {
       this.controlsElement.appendChild(this.createProgressBar());
     }
 
@@ -534,6 +563,8 @@ export class ControlsManager {
     this.progressBar.setAttribute('aria-valuenow', '0');
     this.progressBar.setAttribute('aria-valuemin', '0');
     this.progressBar.setAttribute('aria-valuemax', '100');
+    this.progressBar.setAttribute('aria-valuetext', '0:00 of 0:00');
+    this.progressBar.tabIndex = 0;
 
     // Buffer progress
     this.progressBuffer = document.createElement('div');
@@ -646,6 +677,8 @@ export class ControlsManager {
     const dropdown = document.createElement('div');
     dropdown.className = 'vp-dropdown-menu';
     dropdown.setAttribute('role', 'menu');
+    dropdown.setAttribute('aria-label', label);
+    dropdown.addEventListener('keydown', (e) => this.handleMenuKeyDown(dropdown, e));
 
     wrapper.appendChild(button);
     wrapper.appendChild(dropdown);
@@ -673,10 +706,84 @@ export class ControlsManager {
       dropdown.classList.add('open');
       button?.setAttribute('aria-expanded', 'true');
       this.activeDropdown = dropdown;
-      
+
       // Position dropdown to stay in viewport
       this.positionDropdown(wrapper, dropdown);
+
+      // Move focus into the menu (active item first) for keyboard users
+      const items = this.getMenuItems(dropdown);
+      (items.find(i => i.classList.contains('active')) ?? items[0])?.focus({ preventScroll: true });
     }
+  }
+
+  private getMenuItems(dropdown: HTMLElement): HTMLElement[] {
+    return Array.from(dropdown.querySelectorAll<HTMLElement>('.vp-dropdown-item'));
+  }
+
+  /**
+   * Arrow/Home/End/Escape navigation inside an open menu. Stops propagation so the
+   * player-level shortcuts (arrow keys = seek/volume) don't fire while a menu is open.
+   */
+  private handleMenuKeyDown(dropdown: HTMLElement, e: KeyboardEvent): void {
+    const items = this.getMenuItems(dropdown);
+    const current = items.indexOf(document.activeElement as HTMLElement);
+    let next = -1;
+
+    switch (e.key) {
+      case 'ArrowDown': next = current < items.length - 1 ? current + 1 : 0; break;
+      case 'ArrowUp': next = current > 0 ? current - 1 : items.length - 1; break;
+      case 'Home': next = 0; break;
+      case 'End': next = items.length - 1; break;
+      case 'Escape': {
+        e.preventDefault();
+        e.stopPropagation();
+        const button = dropdown.parentElement?.querySelector<HTMLElement>('.vp-dropdown-btn');
+        this.closeAllDropdowns();
+        button?.focus({ preventScroll: true });
+        return;
+      }
+      case 'Tab':
+        this.closeAllDropdowns();
+        return;
+      default:
+        // Enter/Space activate the focused <button>; let everything else through untouched
+        if (e.key === 'Enter' || e.key === ' ') e.stopPropagation();
+        return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+    items[next]?.focus({ preventScroll: true });
+  }
+
+  /**
+   * Build a menu item from plain strings. Labels come from config (titles, track labels),
+   * so they are set with textContent — never interpolated into innerHTML.
+   */
+  private createMenuItem(label: string, active: boolean, onSelect: () => void, extraClass = ''): HTMLButtonElement {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = `vp-dropdown-item${extraClass ? ` ${extraClass}` : ''}${active ? ' active' : ''}`;
+    item.setAttribute('role', 'menuitemradio');
+    item.setAttribute('aria-checked', String(active));
+
+    const labelEl = document.createElement('span');
+    labelEl.className = 'vp-dropdown-item-label';
+    labelEl.textContent = label;
+    item.appendChild(labelEl);
+
+    if (active) {
+      const check = document.createElement('span');
+      check.className = 'vp-dropdown-item-check';
+      check.innerHTML = Icons.check;
+      item.appendChild(check);
+    }
+
+    item.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onSelect();
+    });
+    return item;
   }
 
   /**
@@ -737,10 +844,7 @@ export class ControlsManager {
    * Render speed options
    */
   private renderSpeedOptions(dropdown: HTMLElement): void {
-    const header = document.createElement('div');
-    header.className = 'vp-dropdown-header';
-    header.textContent = 'Playback Speed';
-    dropdown.appendChild(header);
+    dropdown.appendChild(this.createMenuHeader('Playback Speed'));
 
     const speeds = [
       { value: 0.25, label: '0.25x' },
@@ -754,24 +858,12 @@ export class ControlsManager {
     ];
 
     speeds.forEach(speed => {
-      const item = document.createElement('button');
-      item.type = 'button';
-      item.className = 'vp-dropdown-item';
-      if (this.currentSpeed === speed.value) {
-        item.classList.add('active');
-      }
-      item.innerHTML = `
-        <span class="vp-dropdown-item-label">${speed.label}</span>
-        ${this.currentSpeed === speed.value ? `<span class="vp-dropdown-item-check">${Icons.check}</span>` : ''}
-      `;
-      item.addEventListener('click', (e) => {
-        e.stopPropagation();
+      dropdown.appendChild(this.createMenuItem(speed.label, this.currentSpeed === speed.value, () => {
         this.currentSpeed = speed.value;
         this.callbacks.onPlaybackRateChange(speed.value);
         this.updateSpeedLabel(speed.value);
         this.closeAllDropdowns();
-      });
-      dropdown.appendChild(item);
+      }));
     });
   }
 
@@ -779,173 +871,125 @@ export class ControlsManager {
    * Render quality options
    */
   private renderQualityOptions(dropdown: HTMLElement): void {
-    const header = document.createElement('div');
-    header.className = 'vp-dropdown-header';
-    header.textContent = 'Quality';
-    dropdown.appendChild(header);
+    dropdown.appendChild(this.createMenuHeader('Quality'));
 
     // Auto option (conditionally shown based on config)
     if (this.showAutoQuality) {
-      const autoItem = document.createElement('button');
-      autoItem.type = 'button';
-      autoItem.className = 'vp-dropdown-item';
-      if (!this.currentQuality) {
-        autoItem.classList.add('active');
-      }
-      autoItem.innerHTML = `
-        <span class="vp-dropdown-item-label">Auto</span>
-        ${!this.currentQuality ? `<span class="vp-dropdown-item-check">${Icons.check}</span>` : ''}
-      `;
-      autoItem.addEventListener('click', (e) => {
-        e.stopPropagation();
+      dropdown.appendChild(this.createMenuItem('Auto', !this.currentQuality, () => {
         this.currentQuality = null;
         this.callbacks.onQualityChange('auto');
         this.updateQualityLabel('Auto');
         this.closeAllDropdowns();
-      });
-      dropdown.appendChild(autoItem);
+      }));
     }
 
     // Quality levels
     if (this.qualityLevels.length === 0) {
-      const noQualities = document.createElement('div');
-      noQualities.className = 'vp-dropdown-empty';
-      noQualities.textContent = 'No quality options available';
-      dropdown.appendChild(noQualities);
-    } else {
-      // Sort by height descending
-      const sortedQualities = [...this.qualityLevels].sort((a, b) => b.height - a.height);
-      
-      sortedQualities.forEach(quality => {
-        const item = document.createElement('button');
-        item.type = 'button';
-        item.className = 'vp-dropdown-item';
-        if (this.currentQuality?.height === quality.height) {
-          item.classList.add('active');
-        }
-        
-        const label = quality.height >= 720 
-          ? `${quality.label} HD` 
-          : quality.label;
-        
-        item.innerHTML = `
-          <span class="vp-dropdown-item-label">${label}</span>
-          ${this.currentQuality?.height === quality.height ? `<span class="vp-dropdown-item-check">${Icons.check}</span>` : ''}
-        `;
-        item.addEventListener('click', (e) => {
-          e.stopPropagation();
-          this.currentQuality = quality;
-          this.callbacks.onQualityChange(quality);
-          this.updateQualityLabel(quality.label);
-          this.closeAllDropdowns();
-        });
-        dropdown.appendChild(item);
-      });
+      dropdown.appendChild(this.createMenuEmpty('No quality options available'));
+      return;
     }
+
+    // Sort by height descending
+    [...this.qualityLevels].sort((a, b) => b.height - a.height).forEach(quality => {
+      const label = quality.height >= 720 ? `${quality.label} HD` : quality.label;
+      dropdown.appendChild(this.createMenuItem(label, this.currentQuality?.height === quality.height, () => {
+        this.currentQuality = quality;
+        this.callbacks.onQualityChange(quality);
+        this.updateQualityLabel(quality.label);
+        this.closeAllDropdowns();
+      }));
+    });
   }
 
   /**
    * Render subtitle options
    */
   private renderSubtitleOptions(dropdown: HTMLElement): void {
-    const header = document.createElement('div');
-    header.className = 'vp-dropdown-header';
-    header.textContent = 'Subtitles';
-    dropdown.appendChild(header);
+    dropdown.appendChild(this.createMenuHeader('Subtitles'));
 
-    // Off option
-    const offItem = document.createElement('button');
-    offItem.type = 'button';
-    offItem.className = 'vp-dropdown-item';
-    if (this.currentSubtitle === null) {
-      offItem.classList.add('active');
-    }
-    offItem.innerHTML = `
-      <span class="vp-dropdown-item-label">Off</span>
-      ${this.currentSubtitle === null ? `<span class="vp-dropdown-item-check">${Icons.check}</span>` : ''}
-    `;
-    offItem.addEventListener('click', (e) => {
-      e.stopPropagation();
+    dropdown.appendChild(this.createMenuItem('Off', this.currentSubtitle === null, () => {
       this.currentSubtitle = null;
       this.callbacks.onSubtitleChange(null);
       this.closeAllDropdowns();
-    });
-    dropdown.appendChild(offItem);
+    }));
 
     if (this.subtitleTracks.length === 0) {
-      const noSubs = document.createElement('div');
-      noSubs.className = 'vp-dropdown-empty';
-      noSubs.textContent = 'No subtitles available';
-      dropdown.appendChild(noSubs);
-    } else {
-      this.subtitleTracks.forEach(track => {
-        const item = document.createElement('button');
-        item.type = 'button';
-        item.className = 'vp-dropdown-item';
-        const isActive = this.currentSubtitle !== null && this.currentSubtitle.src === track.src;
-        if (isActive) {
-          item.classList.add('active');
-        }
-        item.innerHTML = `
-          <span class="vp-dropdown-item-label">${track.label}</span>
-          ${isActive ? `<span class="vp-dropdown-item-check">${Icons.check}</span>` : ''}
-        `;
-        item.addEventListener('click', (e) => {
-          e.stopPropagation();
-          this.currentSubtitle = track;
-          this.callbacks.onSubtitleChange(track);
-          this.closeAllDropdowns();
-        });
-        dropdown.appendChild(item);
-      });
+      dropdown.appendChild(this.createMenuEmpty('No subtitles available'));
+      return;
     }
+
+    this.subtitleTracks.forEach(track => {
+      const isActive = this.currentSubtitle !== null && this.currentSubtitle.src === track.src;
+      dropdown.appendChild(this.createMenuItem(track.label, isActive, () => {
+        this.currentSubtitle = track;
+        this.callbacks.onSubtitleChange(track);
+        this.closeAllDropdowns();
+      }));
+    });
   }
 
   /**
    * Render chapter options
    */
   private renderChapterOptions(dropdown: HTMLElement): void {
-    const header = document.createElement('div');
-    header.className = 'vp-dropdown-header';
-    header.textContent = 'Chapters';
-    dropdown.appendChild(header);
+    dropdown.appendChild(this.createMenuHeader('Chapters'));
 
     if (this.chapters.length === 0) {
-      const noChapters = document.createElement('div');
-      noChapters.className = 'vp-dropdown-empty';
-      noChapters.textContent = 'No chapters available';
-      dropdown.appendChild(noChapters);
-    } else {
-      this.chapters.forEach((chapter, index) => {
-        const item = document.createElement('button');
-        item.type = 'button';
-        item.className = 'vp-dropdown-item vp-chapter-item';
-        
-        // Check if current time is in this chapter
-        const currentTime = this.currentState?.currentTime ?? 0;
-        const isActive = currentTime >= chapter.startTime && 
-          (chapter.endTime ? currentTime < chapter.endTime : index === this.chapters.length - 1);
-        
-        if (isActive) {
-          item.classList.add('active');
-        }
-        
-        item.innerHTML = `
-          <span class="vp-chapter-number">${index + 1}</span>
-          <span class="vp-chapter-info">
-            <span class="vp-chapter-title">${chapter.title}</span>
-            <span class="vp-chapter-time">${this.formatTime(chapter.startTime)}</span>
-          </span>
-        `;
-        item.addEventListener('click', (e) => {
-          e.stopPropagation();
-          this.callbacks.onChapterSeek?.(chapter);
-          this.callbacks.onSeek(chapter.startTime / (this.currentState?.duration || 1));
-          this.closeAllDropdowns();
-        });
-        dropdown.appendChild(item);
-      });
+      dropdown.appendChild(this.createMenuEmpty('No chapters available'));
+      return;
     }
+
+    const currentTime = this.currentState?.currentTime ?? 0;
+    this.chapters.forEach((chapter, index) => {
+      const end = this.chapters[index + 1]?.startTime ?? chapter.endTime ?? Infinity;
+      const isActive = currentTime >= chapter.startTime && currentTime < end;
+
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = `vp-dropdown-item vp-chapter-item${isActive ? ' active' : ''}`;
+      item.setAttribute('role', 'menuitemradio');
+      item.setAttribute('aria-checked', String(isActive));
+
+      const number = document.createElement('span');
+      number.className = 'vp-chapter-number';
+      number.textContent = String(index + 1);
+
+      const info = document.createElement('span');
+      info.className = 'vp-chapter-info';
+      const title = document.createElement('span');
+      title.className = 'vp-chapter-title';
+      title.textContent = chapter.title;
+      const time = document.createElement('span');
+      time.className = 'vp-chapter-time';
+      time.textContent = this.formatTime(chapter.startTime);
+      info.append(title, time);
+
+      item.append(number, info);
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (this.callbacks.onChapterSeek) {
+          this.callbacks.onChapterSeek(chapter);
+        } else {
+          this.callbacks.onSeek(chapter.startTime / (this.currentState?.duration || 1));
+        }
+        this.closeAllDropdowns();
+      });
+      dropdown.appendChild(item);
+    });
+  }
+
+  private createMenuHeader(text: string): HTMLElement {
+    const header = document.createElement('div');
+    header.className = 'vp-dropdown-header';
+    header.textContent = text;
+    return header;
+  }
+
+  private createMenuEmpty(text: string): HTMLElement {
+    const empty = document.createElement('div');
+    empty.className = 'vp-dropdown-empty';
+    empty.textContent = text;
+    return empty;
   }
 
   /**
@@ -1009,167 +1053,52 @@ export class ControlsManager {
    */
   private bindEvents(): void {
     // Big play button
-    this.bigPlayBtn?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.callbacks.onTogglePlay();
-    });
+    if (this.bigPlayBtn) {
+      this.listen(this.bigPlayBtn, 'click', (e) => {
+        e.stopPropagation();
+        this.callbacks.onTogglePlay();
+      });
+    }
 
-    // Progress bar events
+    // Progress bar events (mouse + touch scrubbing)
     if (this.progressBar) {
-      this.progressBar.addEventListener('mousedown', this.handleProgressMouseDown.bind(this));
-      this.progressBar.addEventListener('mousemove', this.handleProgressHover.bind(this));
-      this.progressBar.addEventListener('mouseleave', this.handleProgressLeave.bind(this));
-      this.progressBar.addEventListener('click', this.handleProgressClick.bind(this));
+      const bar = this.progressBar;
+      this.listen(bar, 'mousedown', (e) => this.handleProgressMouseDown(e));
+      this.listen(bar, 'mousemove', (e) => this.handleProgressHover(e));
+      this.listen(bar, 'mouseleave', () => this.handleProgressLeave());
+      this.listen(bar, 'click', (e) => this.handleProgressClick(e));
+      this.listen(bar, 'touchstart', (e) => this.handleProgressTouchStart(e), { passive: false });
+      this.listen(bar, 'touchmove', (e) => this.handleProgressTouchMove(e), { passive: false });
+      this.listen(bar, 'touchend', () => this.handleTouchEnd());
     }
 
     // Volume slider events
     if (this.volumeSlider) {
-      this.volumeSlider.addEventListener('mousedown', this.handleVolumeMouseDown.bind(this));
-      this.volumeSlider.addEventListener('click', this.handleVolumeClick.bind(this));
-    }
-
-    // Touch events
-    if (this.progressBar) {
-      this.progressBar.addEventListener('touchstart', this.handleProgressTouchStart.bind(this), { passive: false });
-      this.progressBar.addEventListener('touchmove', this.handleProgressTouchMove.bind(this), { passive: false });
-      this.progressBar.addEventListener('touchend', this.handleTouchEnd.bind(this));
+      this.listen(this.volumeSlider, 'mousedown', (e) => this.handleVolumeMouseDown(e));
+      this.listen(this.volumeSlider, 'click', (e) => this.handleVolumeClick(e));
     }
 
     // Controls visibility
-    this.container.addEventListener('mousemove', this.handleMouseMove.bind(this));
-    this.container.addEventListener('mouseleave', this.startHideTimer.bind(this));
-    this.container.addEventListener('mouseenter', () => {
+    this.listen(this.container, 'mousemove', () => this.handleMouseMove());
+    this.listen(this.container, 'mouseleave', () => this.startHideTimer());
+    this.listen(this.container, 'mouseenter', () => {
       this.showControls();
       this.resetHideTimer();
     });
 
-    // Mobile gestures: double-tap seek, swipe volume/brightness, long press speed
-    this.container.addEventListener('touchstart', (e) => {
-      const target = e.target as HTMLElement;
-      if (target.closest('.vp-controls') || target.closest('.vp-big-play') || target.closest('.vp-poster-overlay')) return;
-      const touch = e.touches[0];
-      this.swipeStartY = touch.clientY;
-      this.swipeStartX = touch.clientX;
-      this.swipeActive = false;
-
-      // Long press — increase speed while held
-      if (this.gesturesConfig.enabled !== false) {
-        this.longPressTimer = setTimeout(() => {
-          this.isLongPressActive = true;
-          this.savedSpeedBeforeLongPress = this.currentSpeed;
-          const lps = this.gesturesConfig.longPressSpeed;
-          const speed = typeof lps === 'number' ? lps : 2;
-          this.callbacks.onPlaybackRateChange(speed);
-          this.showSpeedFeedback(speed);
-        }, 500);
-      }
-    }, { passive: true });
-
-    this.container.addEventListener('touchmove', (e) => {
-      const target = e.target as HTMLElement;
-      if (target.closest('.vp-controls') || target.closest('.vp-poster-overlay')) return;
-
-      // Cancel long press on move
-      if (this.longPressTimer) {
-        clearTimeout(this.longPressTimer);
-        this.longPressTimer = null;
-      }
-
-      if (this.gesturesConfig.enabled === false) return;
-
-      const touch = e.touches[0];
-      const dy = this.swipeStartY - touch.clientY;
-      const dx = Math.abs(touch.clientX - this.swipeStartX);
-
-      if (Math.abs(dy) < 10 && !this.swipeActive) return;
-      if (dx > 30) return; // horizontal scroll — ignore
-
-      this.swipeActive = true;
-      const rect = this.container.getBoundingClientRect();
-      const x = touch.clientX - rect.left;
-      const isRightHalf = x > rect.width / 2;
-
-      const delta = dy / rect.height; // positive = swipe up
-
-      if (isRightHalf && this.gesturesConfig.swipeVolume !== false) {
-        const newVol = Math.max(0, Math.min(1, (this.currentState?.volume ?? 1) + delta * 1.5));
-        this.callbacks.onVolumeChange(newVol);
-        this.showVolumeFeedback(newVol);
-        this.swipeStartY = touch.clientY;
-      }
-    }, { passive: true });
-
-    this.container.addEventListener('touchend', (e) => {
-      const target = e.target as HTMLElement;
-      if (target.closest('.vp-controls') || target.closest('.vp-big-play') || target.closest('.vp-poster-overlay')) {
-        return;
-      }
-
-      // Cancel long press
-      if (this.longPressTimer) {
-        clearTimeout(this.longPressTimer);
-        this.longPressTimer = null;
-      }
-
-      // Restore speed after long press
-      if (this.isLongPressActive) {
-        this.isLongPressActive = false;
-        this.callbacks.onPlaybackRateChange(this.savedSpeedBeforeLongPress);
-        return;
-      }
-
-      // If swipe was happening, don't treat as tap
-      if (this.swipeActive) {
-        this.swipeActive = false;
-        return;
-      }
-
-      e.preventDefault();
-
-      const now = Date.now();
-      const touch = e.changedTouches[0];
-      const rect = this.container.getBoundingClientRect();
-      const x = touch.clientX - rect.left;
-      const zone: 'left' | 'center' | 'right' =
-        x < rect.width / 3 ? 'left' :
-        x > (rect.width * 2) / 3 ? 'right' : 'center';
-
-      const isDoubleTap = now - this.lastTapTime < 300 && zone === this.lastTapZone;
-      this.lastTapTime = now;
-      this.lastTapZone = zone;
-
-      if (isDoubleTap && this.gesturesConfig.doubleTapZones !== false) {
-        if (this.tapTimer) { clearTimeout(this.tapTimer); this.tapTimer = null; }
-        if (zone === 'left') {
-          this.callbacks.onRewind();
-          this.showSeekFeedback('left');
-        } else if (zone === 'right') {
-          this.callbacks.onForward();
-          this.showSeekFeedback('right');
-        } else {
-          this.callbacks.onFullscreenToggle();
-        }
-        this.showControls();
-        this.resetHideTimer();
-      } else {
-        this.tapTimer = setTimeout(() => {
-          this.tapTimer = null;
-          if (this.isControlsVisible && !this.currentState?.paused) {
-            this.hideControls();
-          } else {
-            this.showControls();
-            this.resetHideTimer();
-          }
-        }, 200);
-      }
-    });
+    // Mobile gestures: double-tap seek, swipe volume, long press speed
+    this.listen(this.container, 'touchstart', (e) => this.handleGestureStart(e), { passive: true });
+    this.listen(this.container, 'touchmove', (e) => this.handleGestureMove(e), { passive: true });
+    this.listen(this.container, 'touchend', (e) => this.handleGestureEnd(e));
 
     // Keyboard shortcuts
-    this.container.addEventListener('keydown', this.handleKeyDown.bind(this));
+    this.listen(this.container, 'keydown', (e) => this.handleKeyDown(e));
 
     // Desktop double-click: left/right third seeks, center toggles fullscreen
-    this.container.addEventListener('dblclick', (e) => {
-      if ((e.target as HTMLElement).closest('.vp-controls')) return;
+    this.listen(this.container, 'dblclick', (e) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('.vp-controls, .vp-big-play, .vp-poster-overlay, .vp-error, .vp-mini-controls')) return;
+      if (this.container.classList.contains('vp-mini-active')) return;
       const rect = this.container.getBoundingClientRect();
       const x = e.clientX - rect.left;
       if (x < rect.width / 3) {
@@ -1184,15 +1113,158 @@ export class ControlsManager {
     });
   }
 
+  private isOverlayTarget(target: EventTarget | null): boolean {
+    const el = target as HTMLElement | null;
+    return !!el?.closest?.('.vp-controls, .vp-big-play, .vp-poster-overlay, .vp-error, .vp-mini-controls');
+  }
+
+  /** Long-press playback speed, or null when long-press is disabled (`longPressSpeed: false`). */
+  private getLongPressSpeed(): number | null {
+    const lps = this.gesturesConfig.longPressSpeed;
+    if (lps === false) return null;
+    return typeof lps === 'number' && lps > 0 ? lps : 2;
+  }
+
+  /** Seconds a double-tap seeks: gestures.doubleTapSeek → gestures.seekSeconds → controls.seekDuration */
+  private getDoubleTapSeconds(): number {
+    return this.gesturesConfig.doubleTapSeek ?? this.gesturesConfig.seekSeconds ?? this.config.seekDuration ?? 10;
+  }
+
+  private seekBy(seconds: number): void {
+    if (this.callbacks.onSeekBy) this.callbacks.onSeekBy(seconds);
+    else if (seconds < 0) this.callbacks.onRewind();
+    else this.callbacks.onForward();
+  }
+
+  private handleGestureStart(e: TouchEvent): void {
+    if (this.isOverlayTarget(e.target)) return;
+    const touch = e.touches[0];
+    this.swipeStartY = touch.clientY;
+    this.swipeStartX = touch.clientX;
+    this.swipeActive = false;
+
+    // Long press — increase speed while held
+    const speed = this.getLongPressSpeed();
+    if (this.gesturesConfig.enabled !== false && speed !== null) {
+      if (this.longPressTimer) clearTimeout(this.longPressTimer);
+      this.longPressTimer = setTimeout(() => {
+        this.longPressTimer = null;
+        this.isLongPressActive = true;
+        this.savedSpeedBeforeLongPress = this.currentSpeed;
+        this.callbacks.onPlaybackRateChange(speed);
+        this.showSpeedFeedback(speed);
+      }, 500);
+    }
+  }
+
+  private handleGestureMove(e: TouchEvent): void {
+    const target = e.target as HTMLElement;
+    if (target.closest('.vp-controls') || target.closest('.vp-poster-overlay')) return;
+
+    // Cancel long press on move
+    if (this.longPressTimer) {
+      clearTimeout(this.longPressTimer);
+      this.longPressTimer = null;
+    }
+
+    if (this.gesturesConfig.enabled === false) return;
+
+    const touch = e.touches[0];
+    const dy = this.swipeStartY - touch.clientY;
+    const dx = Math.abs(touch.clientX - this.swipeStartX);
+
+    if (Math.abs(dy) < 10 && !this.swipeActive) return;
+    if (dx > 30) return; // horizontal scroll — ignore
+
+    this.swipeActive = true;
+    const rect = this.container.getBoundingClientRect();
+    const x = touch.clientX - rect.left;
+    const isRightHalf = x > rect.width / 2;
+
+    const delta = dy / rect.height; // positive = swipe up
+
+    if (isRightHalf && this.gesturesConfig.swipeVolume !== false) {
+      const newVol = Math.max(0, Math.min(1, (this.currentState?.volume ?? 1) + delta * 1.5));
+      this.callbacks.onVolumeChange(newVol);
+      this.showVolumeFeedback(newVol);
+      this.swipeStartY = touch.clientY;
+    }
+  }
+
+  private handleGestureEnd(e: TouchEvent): void {
+    if (this.isOverlayTarget(e.target)) return;
+
+    // Cancel long press
+    if (this.longPressTimer) {
+      clearTimeout(this.longPressTimer);
+      this.longPressTimer = null;
+    }
+
+    // Restore speed after long press
+    if (this.isLongPressActive) {
+      this.isLongPressActive = false;
+      this.callbacks.onPlaybackRateChange(this.savedSpeedBeforeLongPress);
+      return;
+    }
+
+    // If swipe was happening, don't treat as tap
+    if (this.swipeActive) {
+      this.swipeActive = false;
+      return;
+    }
+
+    // Suppress the synthetic mouse click; taps are handled here
+    e.preventDefault();
+
+    const now = Date.now();
+    const touch = e.changedTouches[0];
+    const rect = this.container.getBoundingClientRect();
+    const x = touch.clientX - rect.left;
+    const zone: 'left' | 'center' | 'right' =
+      x < rect.width / 3 ? 'left' :
+      x > (rect.width * 2) / 3 ? 'right' : 'center';
+
+    const isDoubleTap = now - this.lastTapTime < 300 && zone === this.lastTapZone;
+    this.lastTapTime = now;
+    this.lastTapZone = zone;
+
+    if (isDoubleTap && this.gesturesConfig.doubleTapZones !== false) {
+      if (this.tapTimer) { clearTimeout(this.tapTimer); this.tapTimer = null; }
+      const seconds = this.getDoubleTapSeconds();
+      if (zone === 'left') {
+        this.seekBy(-seconds);
+        this.showSeekFeedback('left', seconds);
+      } else if (zone === 'right') {
+        this.seekBy(seconds);
+        this.showSeekFeedback('right', seconds);
+      } else {
+        this.callbacks.onFullscreenToggle();
+      }
+      this.showControls();
+      this.resetHideTimer();
+    } else {
+      if (this.tapTimer) clearTimeout(this.tapTimer);
+      this.tapTimer = setTimeout(() => {
+        this.tapTimer = null;
+        if (this.isControlsVisible && !this.currentState?.paused) {
+          this.hideControls();
+        } else {
+          this.showControls();
+          this.resetHideTimer();
+        }
+      }, 200);
+    }
+  }
+
   /**
    * Bind global events
    */
   private bindGlobalEvents(): void {
-    document.addEventListener('mousemove', this.handleGlobalMouseMove.bind(this));
-    document.addEventListener('mouseup', this.handleMouseUp.bind(this));
-    
+    this.listen(document, 'mousemove', (e) => this.handleGlobalMouseMove(e));
+    this.listen(document, 'mouseup', () => this.handleMouseUp());
+
     // Close dropdowns when clicking outside
-    document.addEventListener('click', (e) => {
+    this.listen(document, 'click', (e) => {
       if (!this.container.contains(e.target as Node)) {
         this.closeAllDropdowns();
       }
@@ -1233,9 +1305,10 @@ export class ControlsManager {
     // Update hover preview
     this.progressHover.style.width = `${pos * 100}%`;
 
-    // Thumbnail preview
+    // Thumbnail preview — stacked above the tooltip (which grows to two lines with chapter names)
     if (this.thumbnailPreview?.hasCues()) {
-      this.thumbnailPreview.show(time, pos * 100);
+      // tooltip height + its 8px bottom margin + an 8px gap
+      this.thumbnailPreview.show(time, pos * 100, this.progressTooltip.offsetHeight + 16);
     }
   }
 
@@ -1410,11 +1483,31 @@ export class ControlsManager {
    * Handle keyboard shortcuts
    */
   private handleKeyDown(e: KeyboardEvent): void {
-    // Don't handle if focused on input
-    if ((e.target as HTMLElement).tagName === 'INPUT') return;
+    const target = e.target as HTMLElement;
+
+    // Never hijack typing, and leave browser/OS shortcuts (Ctrl/Cmd/Alt + key) alone
+    if (target.isContentEditable || target.closest?.(EDITABLE_SELECTOR)) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // Open menus handle their own keys
+    if (target.closest?.('.vp-dropdown-menu')) return;
+
+    if (e.key === 'Escape') {
+      this.closeAllDropdowns();
+      return;
+    }
+
+    if (!this.keyboardShortcuts) return;
+
+    // Space/Enter on a focused button activate that button natively — don't also toggle playback
+    const onButton = !!target.closest?.('button, [role="button"]');
+    const onProgressBar = !!this.progressBar && target === this.progressBar;
 
     switch (e.key) {
       case ' ':
+        if (onButton) return;
+        e.preventDefault();
+        this.callbacks.onTogglePlay();
+        break;
       case 'k':
         e.preventDefault();
         this.callbacks.onTogglePlay();
@@ -1426,6 +1519,16 @@ export class ControlsManager {
       case 'ArrowRight':
         e.preventDefault();
         this.callbacks.onForward();
+        break;
+      case 'Home':
+        if (!onProgressBar) return;
+        e.preventDefault();
+        this.callbacks.onSeek(0);
+        break;
+      case 'End':
+        if (!onProgressBar) return;
+        e.preventDefault();
+        this.callbacks.onSeek(1);
         break;
       case 'ArrowUp': {
         e.preventDefault();
@@ -1448,9 +1551,6 @@ export class ControlsManager {
       case 'm':
         e.preventDefault();
         this.callbacks.onMuteToggle();
-        break;
-      case 'Escape':
-        this.closeAllDropdowns();
         break;
       case 'c':
         // Toggle subtitles
@@ -1543,7 +1643,9 @@ export class ControlsManager {
     const wasFullscreen = this.currentState?.fullscreen;
     const wasDuration = this.lastKnownDuration;
     this.lastKnownDuration = state.duration;
-    this.currentState = state;
+    // Copy: the player mutates one state object in place, so keeping the reference would make
+    // every "was*" comparison above see the new values and transitions would never be detected
+    this.currentState = { ...state };
 
     // Render chapter markers whenever duration changes
     if (state.duration > 0 && state.duration !== wasDuration && this.chapters.length > 0) {
@@ -1569,9 +1671,14 @@ export class ControlsManager {
       }
     }
 
-    // Track first play
+    // Track first play; restore the big-button icon that `ended` switched to "replay"
     if (state.playing && this.isInitialPlay) {
       this.isInitialPlay = false;
+    }
+    if (state.playing && !wasPlaying) {
+      const icon = this.bigPlayBtn?.querySelector('.vp-big-play-icon');
+      if (icon) icon.innerHTML = Icons.play;
+      this.bigPlayBtn?.setAttribute('aria-label', 'Play video');
     }
 
     // Handle fullscreen transitions - show controls and reset timer
@@ -1601,6 +1708,7 @@ export class ControlsManager {
       if (this.bigPlayBtn) {
         const icon = this.bigPlayBtn.querySelector('.vp-big-play-icon');
         if (icon) icon.innerHTML = Icons.replay;
+        this.bigPlayBtn.setAttribute('aria-label', 'Replay video');
       }
     }
 
@@ -1634,6 +1742,21 @@ export class ControlsManager {
       if (this.progressThumb) {
         this.progressThumb.style.left = `${percentage}%`;
       }
+    } else {
+      // New source loading — clear the previous video's progress
+      if (this.progressFilled) this.progressFilled.style.width = '0%';
+      if (this.progressThumb) this.progressThumb.style.left = '0%';
+      if (this.progressBuffer) this.progressBuffer.style.width = '0%';
+    }
+
+    // Slider semantics for assistive tech
+    if (this.progressBar) {
+      const pct = state.duration > 0 ? Math.round((state.currentTime / state.duration) * 100) : 0;
+      this.progressBar.setAttribute('aria-valuenow', String(pct));
+      this.progressBar.setAttribute(
+        'aria-valuetext',
+        `${this.formatTime(state.currentTime)} of ${this.formatTime(state.duration)}`
+      );
     }
 
     // Update buffer
@@ -1721,17 +1844,24 @@ export class ControlsManager {
   }
 
   /**
-   * Attach a ThumbnailPreview instance (called from VideoPlayer after VTT loads)
+   * Attach a ThumbnailPreview instance (called from VideoPlayer after VTT loads), or detach with null
    */
-  setThumbnailPreview(preview: ThumbnailPreview): void {
+  setThumbnailPreview(preview: ThumbnailPreview | null): void {
+    if (this.thumbnailPreview && this.thumbnailPreview !== preview) this.thumbnailPreview.hide();
     this.thumbnailPreview = preview;
-    // Mount preview element inside progress container
-    if (this.progressContainer) {
-      const el = preview['el'] as HTMLElement | null;
-      if (el && !this.progressContainer.contains(el)) {
-        this.progressContainer.appendChild(el);
-      }
-    }
+    // Mount inside the progress container so the preview is positioned relative to the bar
+    if (preview && this.progressContainer) preview.mount(this.progressContainer);
+  }
+
+  /** Reflect a quality chosen outside the menu (API call, config default). null = Auto. */
+  setSelectedQuality(quality: QualityLevel | null): void {
+    this.currentQuality = quality;
+    this.updateQualityLabel(quality ? quality.label : 'Auto');
+  }
+
+  /** Reflect a subtitle track chosen outside the menu (API call, rebuild). */
+  setSelectedSubtitle(track: SubtitleTrack | null): void {
+    this.currentSubtitle = track;
   }
 
   /**
@@ -1772,15 +1902,17 @@ export class ControlsManager {
     this.chapterSegments.forEach(s => s.remove());
     this.chapterSegments = [];
 
-    if (!this.progressBar || !this.currentState?.duration) return;
+    if (!this.progressBar) return;
 
-    const duration = this.currentState.duration;
-
+    // Restore the single fill bar whenever there are no chapters, even before duration is known
     if (this.chapters.length === 0) {
       this.progressBar.classList.remove('vp-progress--chaptered');
       if (this.progressFilled) this.progressFilled.style.display = '';
       return;
     }
+
+    const duration = this.currentState?.duration;
+    if (!duration || !isFinite(duration)) return;
 
     // Hide single fill bar; segments provide per-chapter fills
     if (this.progressFilled) this.progressFilled.style.display = 'none';
@@ -1849,15 +1981,25 @@ export class ControlsManager {
    * Destroy controls
    */
   destroy(): void {
+    // Removes every container/document listener registered through listen()
+    this.listeners.abort();
     this.sizeObserver?.disconnect();
+    this.sizeObserver = null;
     if (this.hideControlsTimer) clearTimeout(this.hideControlsTimer);
     if (this.tapTimer) clearTimeout(this.tapTimer);
     if (this.longPressTimer) clearTimeout(this.longPressTimer);
+    if (this.actionTimer) clearTimeout(this.actionTimer);
+    if (this.speedFeedbackTimer) clearTimeout(this.speedFeedbackTimer);
+    if (this.volumeFeedbackTimer) clearTimeout(this.volumeFeedbackTimer);
     if (this.seekFeedbackTimer.left) clearTimeout(this.seekFeedbackTimer.left);
     if (this.seekFeedbackTimer.right) clearTimeout(this.seekFeedbackTimer.right);
     this.seekFeedbackEl.left?.remove();
     this.seekFeedbackEl.right?.remove();
+    this.container.querySelectorAll('.vp-speed-feedback, .vp-volume-feedback').forEach(el => el.remove());
+    this.container.classList.remove('vp-idle', 'vp-dragging', 'vp-live', 'vp-size-xs', 'vp-size-sm', 'vp-size-md', 'vp-size-lg');
+    // The preview is owned by VideoPlayer — just unmount its element
     this.thumbnailPreview?.destroy();
+    this.thumbnailPreview = null;
 
     this.controlsElement?.remove();
     this.posterOverlay?.remove();

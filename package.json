@@ -1,30 +1,34 @@
 {
   "name": "vidstream-player",
   "version": "2.0.0",
-  "description": "Production-ready video player SDK — HLS, DASH, React, Vue, Angular, Web Component, config-driven theming, playlist sidebar, chapters, PiP, mini player, volume animation, touch gestures, auto-resume, progress tracking, analytics plugin, full TypeScript",
+  "description": "Production-ready video player SDK — HLS, DASH, React, Vue, Angular, Web Component, config-driven theming, playlist sidebar, chapters, seek thumbnails, PiP, mini player, volume animation, touch gestures, progress tracking, analytics plugin, full TypeScript",
   "main": "dist/player.umd.js",
-  "module": "dist/player.esm.js",
+  "module": "dist/player.esm.mjs",
   "types": "dist/types/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/types/index.d.ts",
-      "import": "./dist/player.esm.js",
-      "require": "./dist/player.umd.js"
+      "import": "./dist/player.esm.mjs",
+      "require": "./dist/player.umd.js",
+      "default": "./dist/player.esm.js"
     },
     "./webcomponent": {
       "types": "./dist/types/webcomponent.d.ts",
-      "import": "./dist/player.webcomponent.js"
+      "import": "./dist/player.webcomponent.mjs",
+      "require": "./dist/player.webcomponent.cjs",
+      "default": "./dist/player.webcomponent.js"
     },
     "./react": {
       "types": "./dist/types/react-wrapper.d.ts",
-      "import": "./dist/react-wrapper.js",
-      "require": "./dist/react-wrapper.js",
+      "import": "./dist/react-wrapper.mjs",
+      "require": "./dist/react-wrapper.cjs",
       "default": "./dist/react-wrapper.js"
     },
     "./styles": {
       "types": "./dist/types/styles.d.ts",
       "default": "./dist/player.css"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -36,6 +40,8 @@
     "preview": "vite preview",
     "lint": "eslint src --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "prepack": "",
     "postpack": "",
     "publish:npm": "npm run build && npm publish --access public"
@@ -60,7 +66,6 @@
     "picture-in-picture",
     "mini-player",
     "touch-gestures",
-    "auto-resume",
     "analytics",
     "typescript",
     "customizable-video-player",
@@ -83,11 +88,14 @@
     "dashjs": "^5.2.0",
     "eslint": "^8.56.0",
     "hls.js": "^1.4.14",
+    "jsdom": "^25.0.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "typescript": "^5.3.3",
     "vite": "^5.0.10",
-    "vite-plugin-dts": "^3.7.0"
+    "vite-plugin-dts": "^3.7.0",
+    "vitest": "^2.1.9"
   },
-  "dependencies": {},
   "peerDependencies": {
     "dashjs": ">=4.0.0",
     "hls.js": ">=1.0.0",

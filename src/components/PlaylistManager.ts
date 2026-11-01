@@ -16,7 +16,7 @@ export class PlaylistManager {
       showPanel: options.showPanel ?? false,
       startIndex: options.startIndex ?? 0,
     };
-    this.currentIndex = this.opts.startIndex;
+    this.currentIndex = Math.max(0, Math.min(this.opts.startIndex, items.length - 1));
   }
 
   get current(): PlaylistItem {
@@ -65,6 +65,13 @@ export class PlaylistManager {
     return this.current;
   }
 
+  /** Move the current index without firing onChange (keeps the panel in sync with an externally loaded source). */
+  setIndex(index: number): void {
+    if (index < 0 || index >= this.items.length) return;
+    this.currentIndex = index;
+    this.updatePanel();
+  }
+
   onChange(cb: (index: number, item: PlaylistItem) => void): void {
     this.onChangeCallback = cb;
   }
@@ -82,25 +89,65 @@ export class PlaylistManager {
 
   private renderPanel(): void {
     if (!this.panelEl) return;
-    this.panelEl.innerHTML = `<div class="vp-playlist-header">Up Next</div>`;
+    this.panelEl.textContent = '';
 
+    const header = document.createElement('div');
+    header.className = 'vp-playlist-header';
+    header.textContent = 'Up Next';
+    this.panelEl.appendChild(header);
+
+    // Item data comes from consumer config/CMS — build with DOM APIs, never innerHTML
     this.items.forEach((item, i) => {
       const row = document.createElement('div');
       row.className = `vp-playlist-item${i === this.currentIndex ? ' active' : ''}`;
       row.dataset.index = String(i);
-      row.innerHTML = `
-        <div class="vp-playlist-item-thumb-wrapper">
-          ${item.poster ? `<img src="${item.poster}" class="vp-playlist-thumb" alt="">` : `<div class="vp-playlist-thumb-placeholder">${Icons.play}</div>`}
-          <div class="vp-playlist-now-playing">
-            <div class="vp-equalizer-bar"></div><div class="vp-equalizer-bar"></div><div class="vp-equalizer-bar"></div>
-          </div>
-        </div>
-        <div class="vp-playlist-info">
-          <span class="vp-playlist-title">${item.title ?? `Video ${i + 1}`}</span>
-          ${item.duration ? `<span class="vp-playlist-duration">${formatDuration(item.duration)}</span>` : ''}
-        </div>
-      `;
+      row.setAttribute('role', 'button');
+      row.tabIndex = 0;
+
+      const thumbWrapper = document.createElement('div');
+      thumbWrapper.className = 'vp-playlist-item-thumb-wrapper';
+      if (item.poster) {
+        const img = document.createElement('img');
+        img.className = 'vp-playlist-thumb';
+        img.src = item.poster;
+        img.alt = '';
+        thumbWrapper.appendChild(img);
+      } else {
+        const placeholder = document.createElement('div');
+        placeholder.className = 'vp-playlist-thumb-placeholder';
+        placeholder.innerHTML = Icons.play;
+        thumbWrapper.appendChild(placeholder);
+      }
+      const nowPlaying = document.createElement('div');
+      nowPlaying.className = 'vp-playlist-now-playing';
+      for (let bar = 0; bar < 3; bar++) {
+        const eq = document.createElement('div');
+        eq.className = 'vp-equalizer-bar';
+        nowPlaying.appendChild(eq);
+      }
+      thumbWrapper.appendChild(nowPlaying);
+
+      const info = document.createElement('div');
+      info.className = 'vp-playlist-info';
+      const title = document.createElement('span');
+      title.className = 'vp-playlist-title';
+      title.textContent = item.title ?? `Video ${i + 1}`;
+      info.appendChild(title);
+      if (item.duration) {
+        const duration = document.createElement('span');
+        duration.className = 'vp-playlist-duration';
+        duration.textContent = formatDuration(item.duration);
+        info.appendChild(duration);
+      }
+
+      row.append(thumbWrapper, info);
       row.addEventListener('click', () => this.goTo(i));
+      row.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          this.goTo(i);
+        }
+      });
       this.panelEl!.appendChild(row);
     });
   }
@@ -126,9 +173,10 @@ export class PlaylistManager {
 }
 
 function formatDuration(seconds: number): string {
-  const m = Math.floor(seconds / 60);
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60).toString().padStart(2, '0');
-  return `${m}:${s}`;
+  return h > 0 ? `${h}:${m.toString().padStart(2, '0')}:${s}` : `${m}:${s}`;
 }
 
 export const playlistStyles = `
@@ -227,9 +275,14 @@ export const playlistStyles = `
     padding-left: 24px;
   }
 
+  .vp-playlist-item:focus-visible {
+    outline: 2px solid var(--vp-accent-color, #3b82f6);
+    outline-offset: -2px;
+  }
+
   .vp-playlist-item.active {
     background: rgba(255, 255, 255, 0.06);
-    border-left-color: var(--vp-accent-color, #e50914);
+    border-left-color: var(--vp-accent-color, #3b82f6);
   }
 
   .vp-playlist-item-thumb-wrapper {
@@ -291,7 +344,7 @@ export const playlistStyles = `
   .vp-equalizer-bar {
     width: 3px;
     height: 12px;
-    background: var(--vp-accent-color, #e50914);
+    background: var(--vp-accent-color, #3b82f6);
     border-radius: 2px;
     animation: vp-eq 1s ease-in-out infinite alternate;
   }
@@ -326,7 +379,7 @@ export const playlistStyles = `
   }
 
   .vp-playlist-item.active .vp-playlist-title {
-    color: var(--vp-accent-color, #e50914);
+    color: var(--vp-accent-color, #3b82f6);
   }
 
   .vp-playlist-duration {

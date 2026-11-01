@@ -144,4 +144,5 @@ export type {
 // VERSION
 // ============================================================================
 
-export const VERSION = '1.0.0';
+/** Package version, injected from package.json at build time */
+export { VERSION } from './version';

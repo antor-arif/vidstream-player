@@ -1,11 +1,11 @@
 /**
  * Player Theme System
- * 
+ *
  * This module provides the theming system for white-label branding.
  * Features:
- * - CSS variables for easy customization
- * - Pre-built theme presets
+ * - CSS variables for easy customization (defaults are zero-specificity, so stylesheets can override them)
  * - Dynamic theme application
+ * - Optional logo overlay (theme.logoUrl)
  * - Mode-specific styling (OTT vs LMS)
  */
 
@@ -65,12 +65,17 @@ const themeVariableMap: Record<keyof PlayerTheme, string> = {
  */
 export class ThemeManager {
   private container: HTMLElement;
+  /** Only the values the consumer set — defaults live in the base stylesheet */
   private currentTheme: PlayerTheme;
   private mode: PlayerMode;
+  private appliedVars = new Set<string>();
+  private logoEl: HTMLImageElement | null = null;
+  /** Elements outside the container that also need the theme vars (e.g. the playlist panel) */
+  private extraTargets = new Set<HTMLElement>();
 
-  constructor(container: HTMLElement, theme: PlayerTheme = defaultDarkTheme, mode: PlayerMode = 'vod') {
+  constructor(container: HTMLElement, theme: PlayerTheme = {}, mode: PlayerMode = 'vod') {
     this.container = container;
-    this.currentTheme = theme;
+    this.currentTheme = { ...theme };
     this.mode = mode;
   }
 
@@ -79,29 +84,72 @@ export class ThemeManager {
    */
   initialize(): void {
     this.injectBaseStyles();
-    this.applyTheme(this.currentTheme);
+    this.applyTheme({});
     this.applyModeStyles(this.mode);
   }
 
+  /**
+   * Merge theme values and write them as inline CSS variables on the container.
+   * Only explicitly provided values are written inline; unset values fall back to the base stylesheet
+   * (declared with zero specificity), so consumer stylesheets can still override them.
+   * Passing `undefined` for a key reverts it to the default.
+   */
   applyTheme(theme: Partial<PlayerTheme>): void {
     this.currentTheme = { ...this.currentTheme, ...theme };
+    const targets = [this.container, ...this.extraTargets];
 
-    // Apply CSS variables to container
-    Object.entries(this.currentTheme).forEach(([key, value]) => {
-      if (value !== undefined && key in themeVariableMap) {
-        const varName = `${CSS_VAR_PREFIX}${themeVariableMap[key as keyof PlayerTheme]}`;
-        
-        // Handle special cases
-        if (key === 'logoUrl') {
-          this.container.style.setProperty(varName, `url(${value})`);
-        } else {
-          this.container.style.setProperty(varName, String(value));
+    (Object.keys(themeVariableMap) as (keyof PlayerTheme)[]).forEach((key) => {
+      const varName = `${CSS_VAR_PREFIX}${themeVariableMap[key]}`;
+      const value = this.currentTheme[key];
+
+      if (value === undefined || value === null || value === '') {
+        if (this.appliedVars.has(varName)) {
+          targets.forEach(el => el.style.removeProperty(varName));
+          this.appliedVars.delete(varName);
         }
+        return;
       }
+
+      const cssValue = key === 'logoUrl'
+        ? `url("${String(value).replace(/["\\]/g, '\\$&')}")`
+        : String(value);
+      targets.forEach(el => el.style.setProperty(varName, cssValue));
+      this.appliedVars.add(varName);
     });
 
     // Apply data attribute for CSS selectors
     this.container.setAttribute('data-theme', 'custom');
+    this.renderLogo();
+  }
+
+  /** Also write the theme variables onto `el` (an element rendered outside the container). */
+  addTarget(el: HTMLElement): void {
+    this.extraTargets.add(el);
+    this.applyTheme({});
+  }
+
+  removeTarget(el: HTMLElement): void {
+    if (!this.extraTargets.delete(el)) return;
+    this.appliedVars.forEach(varName => el.style.removeProperty(varName));
+  }
+
+  /** Render (or remove) the logo described by theme.logoUrl / logoPosition / tenantName */
+  private renderLogo(): void {
+    const url = this.currentTheme.logoUrl;
+    if (!url) {
+      this.logoEl?.remove();
+      this.logoEl = null;
+      return;
+    }
+
+    if (!this.logoEl) {
+      this.logoEl = document.createElement('img');
+      this.logoEl.draggable = false;
+      this.container.appendChild(this.logoEl);
+    }
+    this.logoEl.className = `vp-logo ${this.currentTheme.logoPosition === 'top-left' ? 'left' : 'right'}`;
+    this.logoEl.alt = this.currentTheme.tenantName ?? '';
+    if (this.logoEl.getAttribute('src') !== url) this.logoEl.src = url;
   }
 
   /**
@@ -136,10 +184,10 @@ export class ThemeManager {
   }
 
   /**
-   * Get current theme
+   * Get the effective theme (defaults merged with consumer overrides)
    */
   getTheme(): PlayerTheme {
-    return { ...this.currentTheme };
+    return { ...defaultDarkTheme, ...this.currentTheme };
   }
 
   /**
@@ -154,8 +202,8 @@ export class ThemeManager {
    */
   generateCSSVariables(): string {
     const vars: string[] = [];
-    
-    Object.entries(this.currentTheme).forEach(([key, value]) => {
+
+    Object.entries(this.getTheme()).forEach(([key, value]) => {
       if (value !== undefined && key in themeVariableMap) {
         const varName = `${CSS_VAR_PREFIX}${themeVariableMap[key as keyof PlayerTheme]}`;
         vars.push(`  ${varName}: ${value};`);
@@ -169,10 +217,14 @@ export class ThemeManager {
    * Destroy theme manager
    */
   destroy(): void {
-    // Clean up CSS variables
-    Object.values(themeVariableMap).forEach((varName) => {
-      this.container.style.removeProperty(`${CSS_VAR_PREFIX}${varName}`);
-    });
+    // Clean up CSS variables we wrote
+    [...this.extraTargets].forEach(el => this.removeTarget(el));
+    this.appliedVars.forEach((varName) => this.container.style.removeProperty(varName));
+    this.appliedVars.clear();
+    this.container.style.removeProperty(`${CSS_VAR_PREFIX}control-padding`);
+    this.container.style.removeProperty(`${CSS_VAR_PREFIX}progress-height`);
+    this.logoEl?.remove();
+    this.logoEl = null;
 
     this.container.removeAttribute('data-theme');
     this.container.removeAttribute('data-mode');
@@ -192,19 +244,20 @@ export function getBaseStyles(): string {
        VIDEO PLAYER - IMPROVED UI STYLES
        ===================================================== */
     
-    /* Base Container */
-    .video-player-container {
+    /* Theme defaults — :where() keeps specificity at zero so any consumer rule
+       (e.g. .my-player { --vp-accent-color: red; }) overrides them. Values mirror defaultDarkTheme. */
+    :where(.video-player-container) {
       --vp-primary-color: #ffffff;
-      --vp-accent-color: #e50914;
+      --vp-accent-color: #3b82f6;
       --vp-text-color: #ffffff;
       --vp-control-bg: rgba(0, 0, 0, 0.7);
-      --vp-progress-color: #e50914;
+      --vp-progress-color: #3b82f6;
       --vp-buffer-color: rgba(255, 255, 255, 0.3);
-      --vp-hover-color: #f43f5e;
+      --vp-hover-color: #60a5fa;
       --vp-border-radius: 8px;
-      --vp-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-      --vp-icon-size: 22px;
-      --vp-tooltip-bg: rgba(24, 24, 27, 0.95);
+      --vp-font-family: system-ui, -apple-system, sans-serif;
+      --vp-icon-size: 24px;
+      --vp-tooltip-bg: rgba(0, 0, 0, 0.9);
 
       /* Spec-required aliases */
       --vp-primary: var(--vp-primary-color);
@@ -216,8 +269,8 @@ export function getBaseStyles(): string {
       --vp-overlay-bg: rgba(0, 0, 0, 0.85);
       --vp-progress-height: 4px;
       --vp-control-size: var(--vp-icon-size);
-      
-      position: relative;
+
+      /* Overridable layout defaults */
       display: block;
       width: 100%;
       aspect-ratio: 16 / 9;
@@ -226,6 +279,11 @@ export function getBaseStyles(): string {
       font-family: var(--vp-font-family);
       color: var(--vp-text-color);
       border-radius: var(--vp-border-radius);
+    }
+
+    /* Base Container — structural rules the player depends on */
+    .video-player-container {
+      position: relative;
       overflow: hidden;
       user-select: none;
       -webkit-tap-highlight-color: transparent;
@@ -1560,8 +1618,7 @@ export function createThemeManager(
   container: HTMLElement,
   options: { theme?: Partial<PlayerTheme>; mode?: PlayerMode } = {}
 ): ThemeManager {
-  const theme: PlayerTheme = { ...defaultDarkTheme, ...options.theme };
-  const manager = new ThemeManager(container, theme, options.mode ?? 'vod');
+  const manager = new ThemeManager(container, options.theme ?? {}, options.mode ?? 'vod');
   manager.initialize();
   return manager;
 }

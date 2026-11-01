@@ -146,7 +146,21 @@ export class HttpAnalyticsAdapter implements AnalyticsAdapter {
     this.transformPayload = options.transformPayload ?? ((p) => p);
     this.onSuccess = options.onSuccess;
     this.onError = options.onError;
+
+    // Deliver queued events before the page goes away (tab close, navigation, mobile backgrounding)
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pagehide', this.handlePageHide);
+      document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    }
   }
+
+  private handlePageHide = (): void => {
+    this.flush().catch(() => {});
+  };
+
+  private handleVisibilityChange = (): void => {
+    if (document.visibilityState === 'hidden') this.flush().catch(() => {});
+  };
 
   async trackEvent(payload: AnalyticsEventPayload): Promise<void> {
     if (this.isDestroyed) return;
@@ -193,11 +207,14 @@ export class HttpAnalyticsAdapter implements AnalyticsAdapter {
   private async sendEvents(events: AnalyticsEventPayload[], attempt: number): Promise<void> {
     try {
       const transformedEvents = events.map(this.transformPayload);
-      
+      const body = JSON.stringify({ events: transformedEvents });
+
       const response = await fetch(this.endpoint, {
         method: this.method,
         headers: this.headers,
-        body: JSON.stringify({ events: transformedEvents }),
+        body,
+        // keepalive lets the request outlive the page (unload / destroy); browsers cap it at 64 KB
+        keepalive: body.length < 60000,
       });
 
       if (!response.ok) {
@@ -222,15 +239,19 @@ export class HttpAnalyticsAdapter implements AnalyticsAdapter {
   }
 
   destroy(): void {
-    this.isDestroyed = true;
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('pagehide', this.handlePageHide);
+      document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+    }
     if (this.batchTimer) {
       clearTimeout(this.batchTimer);
       this.batchTimer = null;
     }
-    // Attempt to send remaining events
+    // Attempt to send remaining events (flush is a no-op once destroyed, so send first)
     if (this.eventQueue.length > 0) {
       this.flush().catch(() => {});
     }
+    this.isDestroyed = true;
   }
 }
 
@@ -249,29 +270,44 @@ export class AnalyticsManager {
   private lastTimeUpdate = 0;
   private sourceUrl = '';
   private isDestroyed = false;
+  private sessionStarted = false;
 
-  constructor(config: AnalyticsConfig) {
+  /**
+   * @param sessionId Session id to stamp on every event. The player passes its own `sessionId`
+   *                  so analytics payloads and EventBus payloads correlate.
+   */
+  constructor(config: AnalyticsConfig, sessionId?: string) {
     this.config = config;
-    this.sessionId = this.generateSessionId();
-    
+    this.sessionId = sessionId ?? this.generateSessionId();
+
     // Use provided adapter or create console adapter
     this.adapter = config.adapter ?? new ConsoleAnalyticsAdapter();
   }
 
   /**
-   * Initialize analytics session
+   * Start the analytics session (tracks `session_start` once per manager)
    */
   initialize(sourceUrl: string): void {
     this.sourceUrl = sourceUrl;
+    if (this.sessionStarted) return;
+    this.sessionStarted = true;
     this.trackEvent('session_start', { currentTime: 0, duration: 0, volume: 1, muted: false, playbackRate: 1 });
+  }
+
+  /**
+   * Update the source URL reported on subsequent events (playlist items, loadSource)
+   */
+  setSource(sourceUrl: string): void {
+    this.sourceUrl = sourceUrl;
   }
 
   /**
    * Start heartbeat tracking
    */
   startHeartbeat(getState: () => { currentTime: number; duration: number; volume: number; muted: boolean; playbackRate: number }): void {
+    this.stopHeartbeat();
     const interval = this.config.heartbeatInterval ?? 30000;
-    
+
     this.heartbeatTimer = setInterval(() => {
       if (!this.isDestroyed) {
         const state = getState();
@@ -327,7 +363,15 @@ export class AnalyticsManager {
       customData: { ...this.config.customData, ...customData },
     };
 
-    this.adapter.trackEvent(payload);
+    // A failing adapter must never break playback event handling
+    try {
+      const result = this.adapter.trackEvent(payload);
+      if (result && typeof (result as Promise<void>).catch === 'function') {
+        (result as Promise<void>).catch(error => console.error('[VideoPlayer Analytics] adapter error:', error));
+      }
+    } catch (error) {
+      console.error('[VideoPlayer Analytics] adapter error:', error);
+    }
   }
 
   /**

@@ -4,7 +4,7 @@
  * Custom Element wrapper for the video player.
  * Provides framework-agnostic integration via standard Web Components API.
  * 
- * Usage:
+ * Usage (registered as both <video-player> and <vidstream-player>):
  * <video-player
  *   src="https://example.com/video.m3u8"
  *   source-type="hls"
@@ -15,6 +15,7 @@
  */
 
 import { VideoPlayer, createVideoPlayer } from './components/VideoPlayer';
+import { VERSION } from './version';
 import type {
   PlayerConfig,
   VideoSource,
@@ -61,8 +62,8 @@ function parseJSON<T>(value: string | null, defaultValue: T): T {
 // ============================================================================
 
 const OBSERVED_ATTRIBUTES = [
-  // Source
-  'src', 'source-type', 'poster', 'title',
+  // Source ('video-title' avoids the native tooltip that the global `title` attribute shows)
+  'src', 'source-type', 'poster', 'title', 'video-title', 'chapters', 'subtitles',
   // Mode & Theme
   'mode', 'accent-color', 'theme',
   // Playback
@@ -100,6 +101,13 @@ export class VideoPlayerElement extends SSRHTMLElement {
   private initialized = false;
   private pendingConfig: Partial<PlayerConfig> = {};
   private _config: Partial<PlayerConfig> = {};
+  /** True while the inner player is being constructed (it may move this element, e.g. playlist panel) */
+  private isInitializing = false;
+  private pendingDestroy = false;
+  /** Set by an explicit destroy() — suppresses automatic re-initialization on reconnect */
+  private explicitlyDestroyed = false;
+  /** Config passed to initialize(), reused if the element is re-attached after being removed */
+  private programmaticConfig: PlayerConfig | null = null;
 
   // ============================================================================
   // LIFECYCLE
@@ -114,14 +122,29 @@ export class VideoPlayerElement extends SSRHTMLElement {
   }
 
   connectedCallback(): void {
-    // Initialize player when connected to DOM
-    if (!this.initialized) {
+    // A move within the document (remove + insert in the same task) cancels the pending teardown
+    this.pendingDestroy = false;
+    if (this.initialized || this.isInitializing || this.explicitlyDestroyed) return;
+
+    if (this.programmaticConfig) {
+      this.initialize(this.programmaticConfig);
+    } else {
       this.initializePlayer();
     }
   }
 
   disconnectedCallback(): void {
-    this.destroy();
+    // The player itself re-parents this element while building the playlist layout
+    if (this.isInitializing) return;
+
+    // Defer: frameworks and the playlist layout move elements (disconnect + reconnect synchronously).
+    // Only tear down if the element is still detached once the current task's DOM work is done.
+    this.pendingDestroy = true;
+    queueMicrotask(() => {
+      if (!this.pendingDestroy || this.isConnected) return;
+      this.pendingDestroy = false;
+      this.teardown();
+    });
   }
 
   attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null): void {
@@ -129,7 +152,7 @@ export class VideoPlayerElement extends SSRHTMLElement {
 
     if (this.initialized && this.player) {
       this.handleAttributeChange(name, newValue);
-    } else if (name === 'src' && newValue) {
+    } else if (name === 'src' && newValue && this.isConnected && !this.isInitializing) {
       this.initializePlayer();
     }
   }
@@ -138,31 +161,30 @@ export class VideoPlayerElement extends SSRHTMLElement {
    * Initialize player with configuration (for programmatic usage)
    */
   initialize(config: PlayerConfig): void {
+    this.programmaticConfig = config;
+    this.explicitlyDestroyed = false;
+
     if (this.initialized && this.player) {
       this.player.updateConfig(config);
       return;
     }
+    if (this.isInitializing) return;
 
-    try {
-      this.player = createVideoPlayer(this, config);
-      this.initialized = true;
+    this.createPlayer({ ...config, ...this.pendingConfig } as PlayerConfig);
+  }
 
-      this.dispatchEvent(new CustomEvent('ready', { 
-        detail: { player: this.player },
-        bubbles: true 
-      }));
-    } catch (error) {
-      console.error('[VideoPlayerElement] Failed to initialize:', error);
-    }
+  /** True once the inner player has been created */
+  isReady(): boolean {
+    return this.initialized && !!this.player;
   }
 
   /**
    * Initialize the player with current attributes
    */
   private initializePlayer(): void {
-    if (this.initialized) return;
+    if (this.initialized || this.isInitializing) return;
     const config = this.buildConfigFromAttributes();
-    
+
     if (!config.source.src) {
       if (parseBoolean(this.getAttribute('debug'))) {
         console.warn('[VideoPlayerElement] No source specified');
@@ -170,32 +192,51 @@ export class VideoPlayerElement extends SSRHTMLElement {
       return;
     }
 
+    this.createPlayer({ ...config, ...this.pendingConfig } as PlayerConfig);
+  }
+
+  private createPlayer(config: PlayerConfig): void {
+    this.isInitializing = true;
     try {
-      this._config = { ...config, ...this.pendingConfig };
-      this.player = createVideoPlayer(this, this._config as PlayerConfig);
+      this._config = config;
+      this.player = createVideoPlayer(this, config);
       this.initialized = true;
       this.pendingConfig = {};
-      
-      // Dispatch ready event
-      this.dispatchEvent(new CustomEvent('ready', { 
+      this.suppressHostTooltip();
+
+      this.dispatchEvent(new CustomEvent('ready', {
         detail: { player: this.player },
-        bubbles: true 
+        bubbles: true
       }));
     } catch (error) {
       console.error('[VideoPlayerElement] Failed to initialize:', error);
+    } finally {
+      this.isInitializing = false;
     }
+  }
+
+  /**
+   * The global `title` attribute (used here for the video title) makes the browser show a tooltip
+   * over the whole player. An empty title on the player's own children cancels it.
+   */
+  private suppressHostTooltip(): void {
+    if (!this.hasAttribute('title')) return;
+    Array.from(this.children).forEach(child => {
+      if (!child.hasAttribute('title')) child.setAttribute('title', '');
+    });
+  }
+
+  private teardown(): void {
+    this.player?.destroy();
+    this.player = null;
+    this.initialized = false;
   }
 
   /**
    * Build configuration from HTML attributes
    */
   private buildConfigFromAttributes(): PlayerConfig {
-    const source: VideoSource = {
-      src: this.getAttribute('src') ?? '',
-      type: (this.getAttribute('source-type') as VideoSourceType) ?? 'auto',
-      poster: this.getAttribute('poster') ?? undefined,
-      title: this.getAttribute('title') ?? undefined,
-    };
+    const source = this.buildSourceFromAttributes();
 
     const watermarkImage = this.getAttribute('watermark-image');
     const watermarkText = this.getAttribute('watermark-text');
@@ -267,6 +308,8 @@ export class VideoPlayerElement extends SSRHTMLElement {
     const subtitlesAttr = this.getAttribute('subtitles');
     const subtitles: SubtitleTrack[] = subtitlesAttr ? parseJSON<SubtitleTrack[]>(subtitlesAttr, []) : [];
 
+    const playbackRateAttr = this.getAttribute('playback-rate');
+
     return {
       source,
       mode: (this.getAttribute('mode') as PlayerMode) ?? 'vod',
@@ -274,6 +317,7 @@ export class VideoPlayerElement extends SSRHTMLElement {
       muted: parseBoolean(this.getAttribute('muted')),
       loop: parseBoolean(this.getAttribute('loop')),
       preload: (this.getAttribute('preload') as 'none' | 'metadata' | 'auto') ?? 'metadata',
+      playbackRate: playbackRateAttr !== null ? parseNumber(playbackRateAttr, 1) : undefined,
       theme,
       watermark,
       antiPiracyText,
@@ -288,6 +332,15 @@ export class VideoPlayerElement extends SSRHTMLElement {
     };
   }
 
+  private buildSourceFromAttributes(): VideoSource {
+    return {
+      src: this.getAttribute('src') ?? '',
+      type: (this.getAttribute('source-type') as VideoSourceType) ?? 'auto',
+      poster: this.getAttribute('poster') ?? undefined,
+      title: this.getAttribute('video-title') ?? this.getAttribute('title') ?? undefined,
+    };
+  }
+
   /**
    * Handle attribute changes
    */
@@ -296,29 +349,75 @@ export class VideoPlayerElement extends SSRHTMLElement {
 
     switch (name) {
       case 'src':
-        if (value) {
-          this.player.loadSource({
-            src: value,
-            type: (this.getAttribute('source-type') as VideoSourceType) ?? 'auto',
-          });
+      case 'source-type':
+      case 'poster':
+      case 'title':
+      case 'video-title':
+        // Reloads when src/type changed; otherwise updates poster/title in place
+        if (this.getAttribute('src')) {
+          this.player.updateConfig({ source: this.buildSourceFromAttributes() });
         }
+        if (name === 'title') this.suppressHostTooltip();
+        break;
+
+      case 'chapters':
+        this.player.updateConfig({ chapters: parseJSON<Chapter[]>(value, []) });
+        break;
+
+      case 'subtitles':
+        this.player.updateConfig({ subtitles: parseJSON<SubtitleTrack[]>(value, []) });
         break;
 
       case 'mode':
-        this.player.updateConfig({ mode: value as PlayerMode });
+        this.player.updateConfig({ mode: (value as PlayerMode) ?? 'vod' });
         break;
 
+      case 'theme': {
+        const theme = parseJSON<PlayerTheme>(value, {});
+        const accentColor = this.getAttribute('accent-color');
+        this.player.updateConfig({ theme: accentColor ? { ...theme, accentColor } : theme });
+        break;
+      }
+
       case 'accent-color':
-        this.player.updateConfig({ 
+        this.player.updateConfig({
           theme: { accentColor: value ?? undefined }
         });
         break;
 
-      case 'muted':
-        if (parseBoolean(value) !== this.getState().muted) {
-          this.toggleMute();
-        }
+      case 'controls':
+        this.player.updateConfig({ controls: parseJSON<ControlsConfig>(value, {}) });
         break;
+
+      case 'muted':
+        this.player.setMuted(parseBoolean(value));
+        break;
+
+      case 'autoplay':
+        this.player.updateConfig({ autoplay: parseBoolean(value) });
+        break;
+
+      case 'loop':
+        this.player.updateConfig({ loop: parseBoolean(value) });
+        break;
+
+      case 'preload':
+        this.player.updateConfig({ preload: (value as 'none' | 'metadata' | 'auto') ?? 'metadata' });
+        break;
+
+      case 'playback-rate':
+        this.player.updateConfig({ playbackRate: parseNumber(value, 1) });
+        break;
+
+      case 'keyboard-shortcuts':
+        this.player.updateConfig({ keyboardShortcuts: parseBoolean(value ?? 'true') });
+        break;
+
+      case 'debug':
+        this.player.updateConfig({ debug: parseBoolean(value) });
+        break;
+
+      // analytics-* and lms-* are read once at initialization
 
       case 'watermark-enabled':
       case 'watermark-image':
@@ -352,14 +451,14 @@ export class VideoPlayerElement extends SSRHTMLElement {
 
       case 'quality-allowed':
       case 'quality-default':
-      case 'quality-show-auto':
+      case 'quality-show-auto': {
         const qualityAllowedAttr = this.getAttribute('quality-allowed');
-        const allowedQualities = qualityAllowedAttr 
+        const allowedQualities = qualityAllowedAttr
           ? qualityAllowedAttr.split(',').map((q: string) => parseInt(q.trim(), 10)).filter((q: number) => !isNaN(q))
           : undefined;
         const qualityDefault = this.getAttribute('quality-default');
         const showAuto = this.getAttribute('quality-show-auto');
-        
+
         this.player.updateConfig({
           quality: {
             allowedQualities,
@@ -368,6 +467,7 @@ export class VideoPlayerElement extends SSRHTMLElement {
           },
         });
         break;
+      }
     }
   }
 
@@ -408,11 +508,11 @@ export class VideoPlayerElement extends SSRHTMLElement {
   }
 
   enterFullscreen(): Promise<void> {
-    return this.toggleFullscreen(), Promise.resolve();
+    return this.player?.enterFullscreen() ?? Promise.resolve();
   }
 
   exitFullscreen(): Promise<void> {
-    return this.toggleFullscreen(), Promise.resolve();
+    return this.player?.exitFullscreen() ?? Promise.resolve();
   }
 
   togglePip(): void {
@@ -420,11 +520,11 @@ export class VideoPlayerElement extends SSRHTMLElement {
   }
 
   enterPip(): Promise<void> {
-    return this.togglePip(), Promise.resolve();
+    return this.player?.enterPip() ?? Promise.resolve();
   }
 
   exitPip(): Promise<void> {
-    return this.togglePip(), Promise.resolve();
+    return this.player?.exitPip() ?? Promise.resolve();
   }
 
   getState(): PlayerState {
@@ -451,12 +551,12 @@ export class VideoPlayerElement extends SSRHTMLElement {
     return this.getState().qualities ?? [];
   }
 
-  setQuality(level: QualityLevel | 'auto'): void {
+  setQuality(level: QualityLevel | number | 'auto'): void {
     this.player?.setQuality(level);
   }
 
   getSubtitleTracks(): SubtitleTrack[] {
-    return [];
+    return [...(this._config.subtitles ?? this.pendingConfig.subtitles ?? [])];
   }
 
   setSubtitle(track: SubtitleTrack | null): void {
@@ -476,10 +576,11 @@ export class VideoPlayerElement extends SSRHTMLElement {
     }
   }
 
+  /** Destroy the player. It stays destroyed (no automatic re-init on reconnect) until initialize() is called. */
   destroy(): void {
-    this.player?.destroy();
-    this.player = null;
-    this.initialized = false;
+    this.explicitlyDestroyed = true;
+    this.pendingDestroy = false;
+    this.teardown();
   }
 
   // ============================================================================
@@ -715,17 +816,24 @@ export class VideoPlayerElement extends SSRHTMLElement {
 // ============================================================================
 
 /**
- * Register the custom element
+ * Register the custom element under `tagName` (default `video-player`).
+ * A constructor can only be defined once per registry, so other names get a trivial subclass.
  */
 export function registerVideoPlayerElement(tagName = 'video-player'): void {
-  if (!customElements.get(tagName)) {
-    customElements.define(tagName, VideoPlayerElement);
-  }
+  if (typeof customElements === 'undefined' || customElements.get(tagName)) return;
+  const alreadyDefined = typeof customElements.getName === 'function'
+    ? customElements.getName(VideoPlayerElement) !== null
+    : tagName !== 'video-player';
+  customElements.define(
+    tagName,
+    alreadyDefined ? class extends VideoPlayerElement {} : VideoPlayerElement
+  );
 }
 
-// Auto-register if in browser environment
+// Auto-register if in browser environment. `vidstream-player` is an alias of `video-player`.
 if (typeof window !== 'undefined') {
-  registerVideoPlayerElement();
+  registerVideoPlayerElement('video-player');
+  registerVideoPlayerElement('vidstream-player');
 }
 
 // ============================================================================
@@ -739,7 +847,7 @@ export const VidstreamPlayer = {
   /**
    * Get SDK version
    */
-  version: '1.0.0',
+  version: VERSION,
 
   /**
    * Create player instance programmatically
@@ -756,9 +864,17 @@ export const VidstreamPlayer = {
   },
 };
 
-// Expose globally for script tag usage
+// Expose globally for script tag usage. In the UMD build `window.VidstreamPlayer` is already the
+// module namespace (VideoPlayer, createVideoPlayer, …) — extend it rather than replacing it.
 if (typeof window !== 'undefined') {
-  (window as any).VidstreamPlayer = VidstreamPlayer;
+  const w = window as any;
+  if (w.VidstreamPlayer && typeof w.VidstreamPlayer === 'object') {
+    for (const [key, value] of Object.entries(VidstreamPlayer)) {
+      if (!(key in w.VidstreamPlayer)) w.VidstreamPlayer[key] = value;
+    }
+  } else {
+    w.VidstreamPlayer = VidstreamPlayer;
+  }
 }
 
 export default VideoPlayerElement;

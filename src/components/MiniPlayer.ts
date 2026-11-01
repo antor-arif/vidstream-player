@@ -10,6 +10,9 @@ export class MiniPlayer {
   private onScrollBack: (() => void) | null = null;
   private wasEverInView = false;
   private isMini = false;
+  /** Set by the × button: stay docked until the user scrolls back to the player, then re-arm */
+  private dismissed = false;
+  private observeTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Saved inline styles to restore on detach
   private savedStyles: Record<string, string> = {};
@@ -31,18 +34,33 @@ export class MiniPlayer {
   initialize(onScrollBack: () => void): void {
     this.onScrollBack = onScrollBack;
     this.observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) {
-          this.wasEverInView = true;
-          if (this.isMini) this.detach();
-        } else if (this.wasEverInView && !this.isMini) {
-          this.attach();
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.target === this.spacer) {
+            // Spacer back in view → the user returned to the player's position
+            if (entry.isIntersecting && this.isMini) this.detach();
+          } else if (entry.target === this.container && !this.isMini) {
+            if (entry.isIntersecting) {
+              this.wasEverInView = true;
+              this.dismissed = false;
+            } else if (this.wasEverInView && !this.dismissed) {
+              this.attach();
+            }
+          }
         }
       },
       { threshold: 0.2 }
     );
     // Small delay so that initial layout is settled before observing
-    setTimeout(() => this.observer?.observe(this.container), 200);
+    this.observeTimer = setTimeout(() => {
+      this.observeTimer = null;
+      this.observer?.observe(this.container);
+    }, 200);
+  }
+
+  /** True while the player is docked in the corner */
+  isActive(): boolean {
+    return this.isMini;
   }
 
   private attach(): void {
@@ -102,7 +120,8 @@ export class MiniPlayer {
 
     this.closeBtn.querySelector('.vp-mini-close')!.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.detach(true);
+      this.dismissed = true;
+      this.detach();
     });
 
     this.container.addEventListener('click', this.handleContainerClick);
@@ -142,16 +161,20 @@ export class MiniPlayer {
       // Re-observe the container after layout settles. The container is now
       // back in the document flow; a short delay prevents a spurious re-attach
       // before the browser has updated intersection state.
-      setTimeout(() => {
+      if (this.observeTimer) clearTimeout(this.observeTimer);
+      this.observeTimer = setTimeout(() => {
+        this.observeTimer = null;
         if (!this.isMini && this.observer) this.observer.observe(this.container);
       }, 200);
     }
   }
 
   destroy(): void {
+    if (this.observeTimer) clearTimeout(this.observeTimer);
+    this.observeTimer = null;
+    if (this.isMini) this.detach(true);
     this.observer?.disconnect();
     this.observer = null;
-    if (this.isMini) this.detach(true);
   }
 }
 

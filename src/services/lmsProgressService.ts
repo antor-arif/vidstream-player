@@ -37,6 +37,7 @@ export class LMSProgressManager {
   private saveTimer: ReturnType<typeof setInterval> | null = null;
   private isDestroyed = false;
   private hasEmittedFirstPlay = false;
+  private completionHandled = false;
   private reachedMilestones: Set<ProgressMilestone> = new Set();
 
   constructor(config: LMSProgressConfig) {
@@ -63,9 +64,12 @@ export class LMSProgressManager {
    * Initialize progress tracking
    */
   initialize(duration: number): void {
+    if (this.isDestroyed) return;
     this.progressData.duration = duration;
-    
-    // Start auto-save timer
+
+    // Start auto-save timer. initialize() runs on every loadedmetadata (playlist items, retries),
+    // so replace the previous timer instead of stacking another one.
+    if (this.saveTimer) clearInterval(this.saveTimer);
     const interval = this.config.saveInterval ?? DEFAULT_SAVE_INTERVAL;
     this.saveTimer = setInterval(() => {
       this.saveProgress();
@@ -118,15 +122,18 @@ export class LMSProgressManager {
     this.checkMilestones();
 
     // Check completion
-    if (percentage >= COMPLETION_THRESHOLD && !this.progressData.isCompleted) {
+    if (percentage >= COMPLETION_THRESHOLD) {
       this.handleCompletion();
     }
   }
 
   /**
-   * Handle video completion
+   * Handle video completion. Runs at the 95% threshold and again on `ended`;
+   * onComplete fires only once per session.
    */
   handleCompletion(): void {
+    if (this.isDestroyed || this.completionHandled) return;
+    this.completionHandled = true;
     this.progressData.isCompleted = true;
     this.progressData.watchedPercentage = 100;
     
@@ -191,6 +198,7 @@ export class LMSProgressManager {
     };
     this.reachedMilestones.clear();
     this.hasEmittedFirstPlay = false;
+    this.completionHandled = false;
   }
 
   /**
