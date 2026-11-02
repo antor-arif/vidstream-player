@@ -748,6 +748,12 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       // In the mini player a click scrolls back to the player (MiniPlayer handles it)
       if (this.container.classList.contains('vp-mini-active')) return;
 
+      // If a dropdown menu is open, consuming the click to dismiss it — do not toggle playback
+      if (this.controlsManager?.hasOpenDropdown()) {
+        this.controlsManager.closeAllDropdowns();
+        return;
+      }
+
       if (this.clickTimer) {
         clearTimeout(this.clickTimer);
         this.clickTimer = null;

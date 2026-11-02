@@ -644,4 +644,45 @@ describe('controls', () => {
     const labels = Array.from(container.querySelectorAll('[data-dropdown="subtitles"] .vp-dropdown-item-label')).map(l => l.innerHTML);
     expect(labels).toContain('&lt;i&gt;English&lt;/i&gt;');
   });
+
+  it('closes dropdown when clicking outside on the document or video surface without toggling playback', async () => {
+    vi.useFakeTimers();
+    const { player, container, video } = createPlayer({
+      source: { src: MP4 },
+    });
+    loadMetadata(video);
+
+    const speedBtn = container.querySelector<HTMLElement>('[data-dropdown="speed"] .vp-dropdown-btn')!;
+    const speedMenu = container.querySelector<HTMLElement>('[data-dropdown="speed"] .vp-dropdown-menu')!;
+
+    // 1. Open speed menu
+    speedBtn.click();
+    expect(speedMenu.classList.contains('open')).toBe(true);
+    expect(speedBtn.getAttribute('aria-expanded')).toBe('true');
+
+    // 2. Click on the document outside the player -> menu should close
+    document.body.click();
+    expect(speedMenu.classList.contains('open')).toBe(false);
+    expect(speedBtn.getAttribute('aria-expanded')).toBe('false');
+
+    // 3. Open speed menu again
+    speedBtn.click();
+    expect(speedMenu.classList.contains('open')).toBe(true);
+
+    // 4. Click on the video element inside container -> menu should close and playback should NOT toggle
+    const toggleSpy = vi.spyOn(player, 'togglePlay');
+    video.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(speedMenu.classList.contains('open')).toBe(false);
+    expect(speedBtn.getAttribute('aria-expanded')).toBe('false');
+
+    // Fast-forward any single-click timer (250ms)
+    vi.advanceTimersByTime(300);
+    expect(toggleSpy).not.toHaveBeenCalled();
+
+    // 5. Clicking video now that menu is closed SHOULD toggle play
+    video.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    vi.advanceTimersByTime(300);
+    expect(toggleSpy).toHaveBeenCalledTimes(1);
+  });
 });

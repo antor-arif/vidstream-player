@@ -995,7 +995,7 @@ export class ControlsManager {
   /**
    * Close all dropdowns
    */
-  private closeAllDropdowns(): void {
+  public closeAllDropdowns(): void {
     const dropdowns = this.controlsElement?.querySelectorAll('.vp-dropdown-menu.open');
     dropdowns?.forEach(dropdown => {
       dropdown.classList.remove('open');
@@ -1007,6 +1007,13 @@ export class ControlsManager {
     });
     
     this.activeDropdown = null;
+  }
+
+  /**
+   * Check if any dropdown menu is currently open
+   */
+  public hasOpenDropdown(): boolean {
+    return this.activeDropdown !== null || !!this.controlsElement?.querySelector('.vp-dropdown-menu.open');
   }
 
   /**
@@ -1246,6 +1253,10 @@ export class ControlsManager {
       if (this.tapTimer) clearTimeout(this.tapTimer);
       this.tapTimer = setTimeout(() => {
         this.tapTimer = null;
+        if (this.hasOpenDropdown()) {
+          this.closeAllDropdowns();
+          return;
+        }
         if (this.isControlsVisible && !this.currentState?.paused) {
           this.hideControls();
         } else {
@@ -1265,7 +1276,9 @@ export class ControlsManager {
 
     // Close dropdowns when clicking outside
     this.listen(document, 'click', (e) => {
-      if (!this.container.contains(e.target as Node)) {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (this.hasOpenDropdown() && !target.closest('.vp-dropdown-wrapper')) {
         this.closeAllDropdowns();
       }
     });
