@@ -42,6 +42,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "prepare": "npm run build",
     "prepack": "",
     "postpack": "",
     "publish:npm": "npm run build && npm publish --access public"
