@@ -36,6 +36,9 @@ import { MiniPlayer, miniPlayerStyles } from './MiniPlayer';
 import { PlaylistManager, playlistStyles } from './PlaylistManager';
 import { parseChaptersVtt } from '../utils/vtt';
 import { isDomainAllowed } from '../utils/security';
+import { buildHlsConfig, buildP2PCoreConfig, isP2PSupported, resolveLowLatency } from '../streaming/hlsConfig';
+import { loadP2PEngine, P2PStatsTracker } from '../streaming/p2p';
+import type { LatencyEvent, P2PStats } from '../types';
 
 // Lazy-loaded streaming engines — not bundled into the main entry.
 // When the import fails (peer dependency not installed, or the UMD build loaded from a
@@ -101,6 +104,15 @@ function playlistItemToSource(item: PlaylistItem): VideoSource {
     chapters: item.chapters,
     thumbnails: item.thumbnailVtt,
   };
+}
+
+/** Structural equality for plain config objects (functions inside are ignored) */
+function sameJson(a: unknown, b: unknown): boolean {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return a === b;
+  }
 }
 
 function toError(value: unknown): Error {
@@ -195,6 +207,16 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   private authRefreshAttempted = false;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private clickTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Live latency + P2P
+  private lastLatency: LatencyEvent | null = null;
+  private lastLatencyEmit = 0;
+  private atLiveEdge = true;
+  private p2pStats: P2PStatsTracker | null = null;
+  private p2pTimer: ReturnType<typeof setInterval> | null = null;
+  private p2pEngine: any = null;
+  private p2pStallTimes: number[] = [];
+  private p2pStartedAt = 0;
 
   constructor(container: HTMLElement | string, config: PlayerConfig) {
     if (typeof container === 'string') {
@@ -342,6 +364,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       onPlaylistNext: () => this.next(),
       onPlaylistPrev: () => this.prev(),
       onSeekBy: (seconds) => this.seek(this.state.currentTime + seconds),
+      onGoLive: () => this.seekToLive(),
     };
 
     let controlsConfig = { ...(this.config.controls ?? {}) };
@@ -544,7 +567,9 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
 
     video.addEventListener('loadedmetadata', () => {
       this.state.duration = video.duration;
-      this.state.isLive = !isFinite(video.duration);
+      // Native/MSE live streams report Infinity; hls.js/dash.js report a finite window duration and
+      // flag live via markLive() from the playlist/manifest instead — keep whichever said "live"
+      this.state.isLive = this.state.isLive || !isFinite(video.duration);
       this.lmsProgressManager?.initialize(video.duration);
       this.controlsManager?.updateLiveState(this.state.isLive || this.config.mode === 'live');
       this.updateState();
@@ -638,6 +663,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       this.analyticsManager?.trackEvent('time_update', this.getAnalyticsState());
       this.lmsProgressManager?.updateProgress(video.currentTime, video.duration);
       this.checkChapterChange();
+      this.trackLatency();
     }, opts);
 
     video.addEventListener('volumechange', () => {
@@ -682,6 +708,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       this.emitEvent('player-buffering', { buffering: true });
       this.eventBus.emit('buffering', { currentTime: video.currentTime, duration: video.duration, sessionId: this._sessionId });
       this.analyticsManager?.trackEvent('buffering', this.getAnalyticsState());
+      this.checkP2PStall();
     }, opts);
 
     video.addEventListener('playing', () => {
@@ -1137,6 +1164,10 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   }
 
   private teardownEngines(): void {
+    this.stopP2PStats();
+    this.lastLatency = null;
+    this.atLiveEdge = true;
+
     try {
       if (this.hls) this.hls.destroy();
     } catch (e) { console.error('[VideoPlayer] Error destroying HLS:', e); }
@@ -1160,6 +1191,14 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     return this.config.source?.src ?? '';
   }
 
+  /** The engine found the stream is live (hls.js playlist `live`, dash.js `isDynamic()`) */
+  private markLive(live: boolean): void {
+    if (this.state.isLive === live) return;
+    this.state.isLive = live;
+    this.controlsManager?.updateLiveState(live || this.config.mode === 'live');
+    this.updateState();
+  }
+
   private isLiveStream(): boolean {
     return this.config.mode === 'live' || this.state.isLive;
   }
@@ -1170,14 +1209,8 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     const video = this.videoElement!;
 
     if (Hls?.isSupported?.()) {
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
-        xhrSetup: (xhr: XMLHttpRequest) => {
-          const header = this.getAuthHeader();
-          if (header) xhr.setRequestHeader(header.name, header.value);
-        },
-      });
+      const hls = await this.createHls(Hls, token);
+      if (!hls) return; // superseded while the P2P engine was loading
       this.hls = hls;
       hls.loadSource(src);
       hls.attachMedia(video);
@@ -1192,6 +1225,19 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
             ref: i,
           }))
         );
+      });
+
+      // hls.js keeps a finite duration for live streams, so take "live" from the playlist itself
+      hls.on(Hls.Events.LEVEL_LOADED, (_: unknown, data: any) => {
+        if (this.hls !== hls) return;
+        if (typeof data?.details?.live === 'boolean') this.markLive(data.details.live);
+      });
+
+      // All fragment traffic (HTTP or P2P) for accurate P2P stats
+      hls.on(Hls.Events.FRAG_LOADED, (_: unknown, data: any) => {
+        if (this.hls !== hls) return;
+        // payload may already be transferred to the transmux worker (byteLength 0) — use the largest count
+        this.p2pStats?.addFragmentBytes(Math.max(data?.payload?.byteLength ?? 0, data?.part?.stats?.loaded ?? 0, data?.part ? 0 : data?.frag?.stats?.loaded ?? 0));
       });
 
       hls.on(Hls.Events.LEVEL_SWITCHED, (_: unknown, data: any) => {
@@ -1215,6 +1261,177 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
         null
       );
     }
+  }
+
+  /**
+   * Build the hls.js instance for this load: low-latency tuning from `config.lowLatency`, and the
+   * P2P mixin when `config.p2p.enabled`. Any P2P problem (library missing, no WebRTC, constructor
+   * failure) degrades to plain HTTP hls.js — P2P must never stop playback.
+   * Returns null when the load was superseded while the P2P engine was being imported.
+   */
+  private async createHls(Hls: any, token: number): Promise<any | null> {
+    const p2pConfig = this.config.p2p;
+    const strategy = p2pConfig?.strategy ?? 'latency';
+    const wantsP2P = !!p2pConfig?.enabled && isP2PSupported();
+    const lowLatency = resolveLowLatency(this.config.lowLatency, wantsP2P ? strategy : undefined);
+    const xhrSetup = (xhr: XMLHttpRequest) => {
+      const header = this.getAuthHeader();
+      if (header) xhr.setRequestHeader(header.name, header.value);
+    };
+
+    if (wantsP2P) {
+      const P2PEngine = await loadP2PEngine();
+      if (this.isStale(token)) return null;
+
+      if (P2PEngine?.injectMixin) {
+        try {
+          const HlsWithP2P = P2PEngine.injectMixin(Hls);
+          const hls = new HlsWithP2P({
+            ...buildHlsConfig({ lowLatency, p2p: true, strategy, xhrSetup }),
+            p2p: {
+              core: buildP2PCoreConfig({
+                p2p: p2pConfig!,
+                lowLatency,
+                sourceUrl: this.config.source.src,
+                httpRequestSetup: this.config.security ? this.p2pHttpRequestSetup : undefined,
+              }),
+            },
+          });
+          this.startP2PStats(hls.p2pEngine);
+          return hls;
+        } catch (error) {
+          console.warn('[VideoPlayer] P2P unavailable, continuing over HTTP:', error);
+        }
+      } else if (this.config.debug) {
+        console.warn('[VideoPlayer] p2p.enabled but p2p-media-loader-hlsjs is not installed — using HTTP only');
+      }
+    } else if (p2pConfig?.enabled && this.config.debug) {
+      console.warn('[VideoPlayer] p2p.enabled but WebRTC is unavailable — using HTTP only');
+    }
+
+    return new Hls(buildHlsConfig({ lowLatency, p2p: false, strategy, xhrSetup }));
+  }
+
+  /** p2p-media-loader's own HTTP segment requests: add the auth header, preserve byte ranges */
+  private p2pHttpRequestSetup = async (
+    url: string,
+    _segmentByteRange: unknown,
+    signal?: AbortSignal,
+    requestByteRange?: { start: number; end?: number }
+  ): Promise<Request | undefined> => {
+    const header = this.getAuthHeader();
+    if (!header) return undefined;
+    const headers: Record<string, string> = { [header.name]: header.value };
+    if (requestByteRange) {
+      headers.Range = `bytes=${requestByteRange.start}-${requestByteRange.end ?? ''}`;
+    }
+    return new Request(url, { headers, signal });
+  };
+
+  private startP2PStats(engine: any): void {
+    this.stopP2PStats();
+    const tracker = new P2PStatsTracker(this._sessionId);
+    tracker.attach(engine);
+    this.p2pStats = tracker;
+    this.p2pEngine = engine;
+    this.p2pStallTimes = [];
+    this.p2pStartedAt = Date.now();
+    this.p2pTimer = setInterval(() => {
+      const stats = tracker.snapshot();
+      this.emitEvent('player-p2p-stats', stats);
+      this.eventBus.emit('p2pStats', stats);
+    }, 2000);
+  }
+
+  private stopP2PStats(): void {
+    if (this.p2pTimer) {
+      clearInterval(this.p2pTimer);
+      this.p2pTimer = null;
+    }
+    this.p2pStats?.detach();
+    this.p2pStats = null;
+    this.p2pEngine = null;
+  }
+
+  /**
+   * Stall guard: waiting for peers must never break live playback. Two stalls within 20 s on a live
+   * stream (after the 5 s startup) switch the P2P engine to fast HTTP fallback on the fly — peers
+   * stay connected and still serve anything they already have, but urgent segments come from HTTP.
+   */
+  private checkP2PStall(): void {
+    const engine = this.p2pEngine;
+    if (!engine || !this.p2pStats || this.p2pStats.isSafeMode() || !this.isLiveStream()) return;
+    const now = Date.now();
+    if (now - this.p2pStartedAt < 5000) return;
+
+    this.p2pStallTimes = this.p2pStallTimes.filter(t => now - t < 20000);
+    this.p2pStallTimes.push(now);
+    if (this.p2pStallTimes.length < 2) return;
+
+    const lowLatency = resolveLowLatency(this.config.lowLatency, undefined);
+    try {
+      engine.applyDynamicConfig({
+        core: {
+          highDemandTimeWindow: Math.max(6, (lowLatency?.targetLatency ?? 4) + 2),
+          httpDownloadInitialTimeoutMs: 0,
+          p2pNotReceivingBytesTimeoutMs: 1000,
+          p2pErrorRetries: 1,
+        },
+      });
+      this.p2pStats.setSafeMode();
+      console.warn('[VideoPlayer] Repeated stalls with P2P — switched P2P to fast HTTP fallback (safe mode)');
+    } catch (error) {
+      if (this.config.debug) console.warn('[VideoPlayer] Could not apply P2P safe mode:', error);
+    }
+  }
+
+  /** Measure live latency (throttled to ~1/s), update the LIVE badge and emit `latency` */
+  private trackLatency(): void {
+    if (!this.isLiveStream()) return;
+    const now = Date.now();
+    if (now - this.lastLatencyEmit < 1000) return;
+
+    const snapshot = this.measureLatency();
+    if (!snapshot) return;
+    this.lastLatencyEmit = now;
+    this.lastLatency = snapshot;
+
+    if (snapshot.atLiveEdge !== this.atLiveEdge) {
+      this.atLiveEdge = snapshot.atLiveEdge;
+      this.controlsManager?.updateLiveEdge(snapshot.atLiveEdge);
+    }
+    this.emitEvent('player-latency', snapshot);
+    this.eventBus.emit('latency', snapshot);
+  }
+
+  private measureLatency(): LatencyEvent | null {
+    const video = this.videoElement;
+    if (!video) return null;
+
+    let latency: number | null = null;
+    let target: number | null = null;
+    if (this.hls) {
+      latency = typeof this.hls.latency === 'number' ? this.hls.latency : null;
+      target = typeof this.hls.targetLatency === 'number' ? this.hls.targetLatency : null;
+    }
+    if (latency === null && video.seekable && video.seekable.length) {
+      // Native HLS (Safari): distance from the end of the seekable window
+      latency = Math.max(0, video.seekable.end(video.seekable.length - 1) - video.currentTime);
+    }
+    if (latency === null || !Number.isFinite(latency)) return null;
+    if (target === null || !Number.isFinite(target)) {
+      target = resolveLowLatency(this.config.lowLatency, undefined)?.targetLatency ?? 3 * 2;
+    }
+
+    // Hysteresis: fall behind at target + 2 s, count as live again within target + 1 s
+    const atLiveEdge = this.atLiveEdge ? latency <= target + 2 : latency <= target + 1;
+    return {
+      latency,
+      targetLatency: target,
+      atLiveEdge,
+      playbackRate: video.playbackRate,
+      sessionId: this._sessionId,
+    };
   }
 
   private handleHlsError(hls: any, data: any): void {
@@ -1274,6 +1491,11 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
 
     player.on(events.STREAM_INITIALIZED, () => {
       if (this.dash !== player) return;
+      try {
+        if (typeof player.isDynamic === 'function') this.markLive(!!player.isDynamic());
+      } catch {
+        // live detection is best-effort
+      }
       try {
         this.setRawQualities(this.getDashRepresentations(player));
       } catch (error) {
@@ -1665,6 +1887,39 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   get sessionId(): string { return this._sessionId; }
 
   // ============================================================================
+  // LIVE + P2P API
+  // ============================================================================
+
+  /** Jump to the live edge (hls.js live sync point, i.e. the target latency). No-op for VOD. */
+  seekToLive(): void {
+    const video = this.videoElement;
+    if (!video || !this.isLiveStream()) return;
+
+    const syncPosition = this.hls?.liveSyncPosition;
+    if (typeof syncPosition === 'number' && Number.isFinite(syncPosition)) {
+      video.currentTime = syncPosition;
+    } else if (video.seekable && video.seekable.length) {
+      const end = video.seekable.end(video.seekable.length - 1);
+      const target = resolveLowLatency(this.config.lowLatency, undefined)?.targetLatency ?? 3;
+      video.currentTime = Math.max(0, end - target);
+    }
+    this.atLiveEdge = true;
+    this.controlsManager?.updateLiveEdge(true);
+    if (video.paused) this.play().catch(() => {});
+  }
+
+  /** Latest live latency snapshot, or null when not playing a live stream */
+  getLiveLatency(): LatencyEvent | null {
+    if (!this.isLiveStream()) return null;
+    return this.measureLatency() ?? this.lastLatency;
+  }
+
+  /** P2P traffic for the current source, or null when P2P is not active */
+  getP2PStats(): P2PStats | null {
+    return this.p2pStats?.snapshot() ?? null;
+  }
+
+  // ============================================================================
   // EVENT BUS (VidstreamPlayerInstance)
   // ============================================================================
 
@@ -1767,6 +2022,14 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     }
 
     if ('security' in config) this.authToken = this.config.security?.authToken;
+
+    // Engine-level settings: rebuild the HLS engine (resumes VOD position; live rejoins at the target)
+    if (
+      ('lowLatency' in config && !sameJson(config.lowLatency, prev.lowLatency)) ||
+      ('p2p' in config && !sameJson(config.p2p, prev.p2p))
+    ) {
+      if (this.hls) this.restartPlayback();
+    }
 
     if ('errorRecovery' in config) {
       this.errorRecovery?.destroy();

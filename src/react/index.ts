@@ -46,4 +46,8 @@ export type {
   VidstreamAnalyticsPlugin,
   ChapterChangeEvent,
   PlaylistChangeEvent,
+  LowLatencyConfig,
+  P2PConfig,
+  P2PStats,
+  LatencyEvent,
 } from '../types';

@@ -1114,6 +1114,27 @@ export function getBaseStyles(): string {
       display: flex;
     }
 
+    button.vp-live-badge {
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+      line-height: 1.2;
+    }
+
+    /* Behind the live edge: grey badge, click to jump back */
+    .vp-live-badge.vp-live-behind {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    .vp-live-badge.vp-live-behind::before {
+      background: rgba(255, 255, 255, 0.7);
+      animation: none;
+    }
+
+    .vp-live-badge.vp-live-behind:hover {
+      background: #ef4444;
+    }
+
     .vp-live-badge::before {
       content: '';
       width: 8px;

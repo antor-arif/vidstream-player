@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>vidstream verify harness</title>
+  <style>
+    body { margin: 0; padding: 16px; background: #111; color: #ddd; font: 13px system-ui, sans-serif; }
+    .slot { width: 720px; max-width: 100%; margin: 0 0 24px; }
+    #log { font: 11px monospace; white-space: pre-wrap; color: #9ca3af; }
+  </style>
+</head>
+<body>
+  <div id="slot-1" class="slot"></div>
+  <div id="log"></div>
+  <script type="module">
+    // Imports the live source (served by verify-server.mjs with the package as Vite root).
+    import * as VS from '/src/index.ts';
+
+    const STREAMS = {
+      mp4: 'https://media.w3.org/2010/05/sintel/trailer.mp4',
+      hls: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+      hls2: 'https://test-streams.mux.dev/tos_ismc/master.m3u8',
+      dash: 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd',
+      dash2: 'https://storage.googleapis.com/shaka-demo-assets/angel-one/dash.mpd',
+      live: 'https://demo.unified-streaming.com/k8s/live/stable/live.isml/.m3u8',
+      poster: 'https://peach.blender.org/wp-content/uploads/title_anouncement.jpg',
+    };
+
+    const players = {};
+    const logEl = document.getElementById('log');
+    const log = (...a) => { logEl.textContent += a.map(String).join(' ') + '\n'; };
+
+    /** Mount a player into a slot (created on demand). Returns the VideoPlayer. */
+    function mount(config, id = `slot-${Object.keys(players).length + 1}`) {
+      let el = document.getElementById(id);
+      if (!el) {
+        el = document.createElement('div');
+        el.id = id;
+        el.className = 'slot';
+        document.body.insertBefore(el, logEl);
+      }
+      players[id]?.destroy();
+      players[id] = VS.createVideoPlayer(el, config);
+      return players[id];
+    }
+
+    /** Resolve when fn() is truthy (polls every 100 ms), or reject after ms. */
+    function waitFor(fn, ms = 15000) {
+      return new Promise((resolve, reject) => {
+        const start = Date.now();
+        const t = setInterval(() => {
+          let v; try { v = fn(); } catch { v = false; }
+          if (v) { clearInterval(t); resolve(v); }
+          else if (Date.now() - start > ms) { clearInterval(t); reject(new Error('waitFor timeout')); }
+        }, 100);
+      });
+    }
+
+    /** Blob URL for inline VTT text (thumbnails / chapters / captions tests). */
+    const vttUrl = (text) => URL.createObjectURL(new Blob([text], { type: 'text/vtt' }));
+
+    Object.assign(window, { VS, STREAMS, players, mount, waitFor, vttUrl, log });
+
+    // Default player unless ?empty is in the URL.
+    if (!new URLSearchParams(location.search).has('empty')) {
+      mount({ source: { src: STREAMS.mp4, poster: STREAMS.poster, title: 'Harness default' } }, 'slot-1');
+    }
+    window.harnessReady = true;
+  </script>
+</body>
+</html>

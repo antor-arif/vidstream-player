@@ -60,6 +60,8 @@ export interface ControlsCallbacks {
   onPlaylistPrev?: () => void;
   /** Relative seek in seconds (double-tap gestures). Falls back to onForward/onRewind when absent. */
   onSeekBy?: (seconds: number) => void;
+  /** LIVE badge clicked — jump to the live edge */
+  onGoLive?: () => void;
 }
 
 export interface ControlsOptions {
@@ -134,6 +136,9 @@ export class ControlsManager {
 
   // Thumbnail preview
   private thumbnailPreview: ThumbnailPreview | null = null;
+
+  // Live
+  private liveBadge: HTMLElement | null = null;
 
   // Playlist buttons
   private prevBtn: HTMLElement | null = null;
@@ -470,11 +475,19 @@ export class ControlsManager {
     }
 
     // Live badge (shown for live streams)
+    // Visibility comes from CSS (.vp-live .vp-live-badge); an inline display would override it.
+    // Clicking it jumps back to the live edge when playback has fallen behind.
     if (this.config.liveIndicator) {
-      const liveBadge = document.createElement('div');
+      const liveBadge = document.createElement('button');
+      liveBadge.type = 'button';
       liveBadge.className = 'vp-live-badge';
       liveBadge.textContent = 'LIVE';
-      liveBadge.style.display = 'none'; // Hidden by default, shown when vp-live class is set
+      liveBadge.setAttribute('aria-label', 'Live');
+      liveBadge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.callbacks.onGoLive?.();
+      });
+      this.liveBadge = liveBadge;
       leftGroup.appendChild(liveBadge);
     }
 
@@ -1981,6 +1994,14 @@ export class ControlsManager {
    */
   updateLiveState(isLive: boolean): void {
     this.container.classList.toggle('vp-live', isLive);
+  }
+
+  /** Grey the LIVE badge (and make it a "jump to live" button) when playback is behind the live edge */
+  updateLiveEdge(atLiveEdge: boolean): void {
+    if (!this.liveBadge) return;
+    this.liveBadge.classList.toggle('vp-live-behind', !atLiveEdge);
+    this.liveBadge.setAttribute('aria-label', atLiveEdge ? 'Live' : 'Jump to live');
+    this.liveBadge.setAttribute('title', atLiveEdge ? 'Live' : 'Jump to live');
   }
 
   /**

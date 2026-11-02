@@ -1,7 +1,7 @@
 {
   "name": "vidstream-player",
   "version": "2.0.0",
-  "description": "Production-ready video player SDK — HLS, DASH, React, Vue, Angular, Web Component, config-driven theming, playlist sidebar, chapters, seek thumbnails, PiP, mini player, volume animation, touch gestures, progress tracking, analytics plugin, full TypeScript",
+  "description": "Production-ready video player SDK — HLS, LL-HLS, DASH, P2P (WebRTC), React, Vue, Angular, Web Component, config-driven theming, playlist sidebar, chapters, seek thumbnails, PiP, mini player, volume animation, touch gestures, progress tracking, analytics plugin, full TypeScript",
   "main": "dist/player.umd.js",
   "module": "dist/player.esm.mjs",
   "types": "dist/types/index.d.ts",
@@ -76,7 +76,11 @@
     "vue",
     "angular",
     "hlsjs",
-    "dashjs"
+    "dashjs",
+    "p2p",
+    "webrtc",
+    "low-latency",
+    "ll-hls"
   ],
   "author": "Md. Arifur Rahman",
   "license": "MIT",
@@ -90,6 +94,7 @@
     "eslint": "^8.56.0",
     "hls.js": "^1.4.14",
     "jsdom": "^25.0.1",
+    "p2p-media-loader-hlsjs": "^4.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "typescript": "^5.3.3",
@@ -101,7 +106,8 @@
     "dashjs": ">=4.0.0",
     "hls.js": ">=1.0.0",
     "react": ">=17.0.0",
-    "react-dom": ">=17.0.0"
+    "react-dom": ">=17.0.0",
+    "p2p-media-loader-hlsjs": ">=4.0.0"
   },
   "peerDependenciesMeta": {
     "dashjs": {
@@ -114,6 +120,9 @@
       "optional": true
     },
     "react-dom": {
+      "optional": true
+    },
+    "p2p-media-loader-hlsjs": {
       "optional": true
     }
   },

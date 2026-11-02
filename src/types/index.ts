@@ -201,6 +201,88 @@ export interface MiniPlayerConfig {
 }
 
 // ============================================================================
+// LOW LATENCY + P2P TYPES
+// ============================================================================
+
+/** Live latency tuning (HLS). Works for LL-HLS (EXT-X-PART) and short-segment HLS. */
+export interface LowLatencyConfig {
+  /** Default: true */
+  enabled?: boolean;
+  /**
+   * Distance from the live edge to hold, in seconds. Default: 4 (3 with p2p.strategy 'offload', where
+   * playback settles about one segment above this value while waiting for peers — ~5 s with 2 s segments)
+   */
+  targetLatency?: number;
+  /** Jump back to the target when latency exceeds this (seconds). Default: targetLatency + 3 */
+  maxLatency?: number;
+  /** Maximum playback rate used to catch up when behind the target (1 = never speed up). Default: 1.1 */
+  maxCatchUpRate?: number;
+  /** Load LL-HLS partial segments when the playlist has them. Default: true (false when p2p.strategy is 'offload') */
+  partLoading?: boolean;
+}
+
+/**
+ * How P2P trades CDN offload against live latency:
+ * - 'latency' (default): LL-HLS parts and segments needed right now come over HTTP; peers serve
+ *   whatever they already have, with a fast HTTP fallback. P2P never pushes latency past the target.
+ * - 'offload': full segments only (no parts), wait briefly for peers before falling back to HTTP.
+ *   Maximises P2P ratio; latency drifts toward maxLatency when peers are slow.
+ */
+export type P2PStrategy = 'latency' | 'offload';
+
+/** Peer-to-peer segment delivery for HLS via p2p-media-loader (optional peer dependency `p2p-media-loader-hlsjs`). */
+export interface P2PConfig {
+  /** Default: false */
+  enabled?: boolean;
+  /** WebTorrent tracker URLs (wss://…). Default: p2p-media-loader's public trackers */
+  trackers?: string[];
+  /**
+   * Swarm identifier — viewers with the same id share segments. Default: the unsigned source URL
+   * (stable even when security.getSignedPlaybackUrl adds per-viewer tokens to the manifest URL).
+   */
+  swarmId?: string;
+  /** STUN/TURN servers for WebRTC. Default: public STUN servers */
+  iceServers?: RTCIceServer[];
+  /** Default: 'latency' */
+  strategy?: P2PStrategy;
+  /** Download from peers but never upload. Default: false */
+  uploadDisabled?: boolean;
+  /** Maximum simultaneous peer connections. Default: library default */
+  maxPeers?: number;
+  /** Raw p2p-media-loader core config, merged last (advanced: validateP2PSegment, time windows, …) */
+  core?: Record<string, unknown>;
+}
+
+/** Snapshot of P2P traffic for the current source */
+export interface P2PStats {
+  /** Bytes downloaded from the CDN/origin */
+  httpBytes: number;
+  /** Bytes downloaded from peers */
+  p2pBytes: number;
+  /** Bytes uploaded to peers */
+  uploadedBytes: number;
+  /** Currently connected peers */
+  peers: number;
+  /** p2pBytes / (httpBytes + p2pBytes), 0–1 */
+  p2pRatio: number;
+  /** True after repeated stalls switched P2P to fast HTTP fallback for the rest of this source */
+  safeMode: boolean;
+  sessionId: string;
+}
+
+/** Live latency snapshot (HLS live streams) */
+export interface LatencyEvent {
+  /** Seconds behind the live edge */
+  latency: number;
+  /** Latency the player is steering toward */
+  targetLatency: number;
+  /** True when close enough to the target to count as "live" */
+  atLiveEdge: boolean;
+  playbackRate: number;
+  sessionId: string;
+}
+
+// ============================================================================
 // PLAYLIST TYPES
 // ============================================================================
 
@@ -499,6 +581,10 @@ export interface PlayerConfig {
   playlistOptions?: PlaylistOptions;
   /** Plugin slot for @vidstream/analytics and others */
   plugins?: PluginsConfig;
+  /** Low-latency live HLS (3–5 s behind live). `true` uses the defaults. */
+  lowLatency?: boolean | LowLatencyConfig;
+  /** Peer-to-peer HLS delivery (requires `p2p-media-loader-hlsjs` and hls.js ≥ 1.5) */
+  p2p?: P2PConfig;
   autoplay?: boolean;
   muted?: boolean;
   loop?: boolean;
@@ -576,6 +662,10 @@ export interface PlayerEvents {
   'player-progress-saved': PlayerEventDetail<LMSProgressData>;
   'player-chapter-change': PlayerEventDetail<ChapterChangeEvent>;
   'player-playlist-change': PlayerEventDetail<PlaylistChangeEvent>;
+  /** About once per second while a live HLS stream plays */
+  'player-latency': PlayerEventDetail<LatencyEvent>;
+  /** About every 2 seconds while P2P is active */
+  'player-p2p-stats': PlayerEventDetail<P2PStats>;
 }
 
 // ============================================================================
@@ -637,6 +727,14 @@ export interface VidstreamPlayerInstance {
   on(event: string, handler: Function): void;
   off(event: string, handler: Function): void;
   once(event: string, handler: Function): void;
+
+  // Live / P2P
+  /** Jump to the live edge (at the target latency). No-op for VOD. */
+  seekToLive(): void;
+  /** Current live latency snapshot, or null when not playing a live HLS stream */
+  getLiveLatency(): LatencyEvent | null;
+  /** P2P traffic snapshot, or null when P2P is not active */
+  getP2PStats(): P2PStats | null;
 
   // Identity
   readonly sessionId: string;

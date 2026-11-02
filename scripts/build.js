@@ -20,7 +20,8 @@ const entries = {
   'react-wrapper': path.resolve(__dirname, '../src/react/index.ts'),
 };
 
-const external = ['react', 'react-dom', 'react/jsx-runtime', 'hls.js', 'dashjs'];
+// Optional peers — loaded by the consumer's bundler (or as globals with the UMD build), never bundled
+const external = ['react', 'react-dom', 'react/jsx-runtime', 'hls.js', 'dashjs', 'p2p-media-loader-hlsjs', 'p2p-media-loader-core'];
 
 function prependUseClient(file) {
   if (!fs.existsSync(file)) return;
@@ -130,6 +131,8 @@ async function runBuild() {
             'react/jsx-runtime': 'React',
             'hls.js': 'Hls',
             'dashjs': 'dashjs',
+            'p2p-media-loader-hlsjs': 'p2pml.hlsjs',
+            'p2p-media-loader-core': 'p2pml.core',
           },
           exports: 'named',
         },

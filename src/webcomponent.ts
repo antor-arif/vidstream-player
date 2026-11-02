@@ -32,6 +32,10 @@ import type {
   QualityLevel,
   SubtitleTrack,
   Chapter,
+  LowLatencyConfig,
+  P2PConfig,
+  P2PStats,
+  LatencyEvent,
 } from './types';
 
 // ============================================================================
@@ -83,6 +87,8 @@ const OBSERVED_ATTRIBUTES = [
   'lms-enabled', 'lms-video-id', 'lms-user-id',
   // Debug
   'debug',
+  // Low latency + P2P
+  'low-latency', 'target-latency', 'p2p', 'p2p-trackers', 'p2p-swarm-id', 'p2p-strategy',
 ] as const;
 
 // ============================================================================
@@ -329,6 +335,28 @@ export class VideoPlayerElement extends SSRHTMLElement {
       debug: parseBoolean(this.getAttribute('debug')),
       chapters,
       subtitles,
+      lowLatency: this.buildLowLatencyFromAttributes(),
+      p2p: this.buildP2PFromAttributes(),
+    };
+  }
+
+  /** low-latency (boolean) + target-latency (seconds; implies low-latency) */
+  private buildLowLatencyFromAttributes(): LowLatencyConfig | undefined {
+    const target = this.getAttribute('target-latency');
+    if (!parseBoolean(this.getAttribute('low-latency')) && target === null) return undefined;
+    return target !== null ? { targetLatency: parseNumber(target, 4) } : {};
+  }
+
+  /** p2p (boolean), p2p-trackers (comma-separated wss:// URLs), p2p-swarm-id, p2p-strategy */
+  private buildP2PFromAttributes(): P2PConfig | undefined {
+    if (!parseBoolean(this.getAttribute('p2p'))) return undefined;
+    const trackers = this.getAttribute('p2p-trackers');
+    const strategy = this.getAttribute('p2p-strategy');
+    return {
+      enabled: true,
+      trackers: trackers ? trackers.split(',').map(t => t.trim()).filter(Boolean) : undefined,
+      swarmId: this.getAttribute('p2p-swarm-id') ?? undefined,
+      strategy: strategy === 'offload' ? 'offload' : 'latency',
     };
   }
 
@@ -415,6 +443,18 @@ export class VideoPlayerElement extends SSRHTMLElement {
 
       case 'debug':
         this.player.updateConfig({ debug: parseBoolean(value) });
+        break;
+
+      case 'low-latency':
+      case 'target-latency':
+        this.player.updateConfig({ lowLatency: this.buildLowLatencyFromAttributes() ?? false });
+        break;
+
+      case 'p2p':
+      case 'p2p-trackers':
+      case 'p2p-swarm-id':
+      case 'p2p-strategy':
+        this.player.updateConfig({ p2p: this.buildP2PFromAttributes() ?? { enabled: false } });
         break;
 
       // analytics-* and lms-* are read once at initialization
@@ -604,6 +644,10 @@ export class VideoPlayerElement extends SSRHTMLElement {
   getQuality(): string | number { return this.player?.getQuality() ?? 'auto'; }
 
   get sessionId(): string { return this.player?.sessionId ?? ''; }
+
+  seekToLive(): void { this.player?.seekToLive(); }
+  getLiveLatency(): LatencyEvent | null { return this.player?.getLiveLatency() ?? null; }
+  getP2PStats(): P2PStats | null { return this.player?.getP2PStats() ?? null; }
 
   // ============================================================================
   // CONVENIENCE PROPERTIES

@@ -135,6 +135,11 @@ export type {
   PlaylistOptions,
   VidstreamAnalyticsPlugin,
   PluginsConfig,
+  LowLatencyConfig,
+  P2PConfig,
+  P2PStrategy,
+  P2PStats,
+  LatencyEvent,
 
   // Utilities
   DeepPartial,

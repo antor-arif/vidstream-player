@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>vidstream P2P + low-latency check</title>
+  <style>
+    body { margin: 0; padding: 16px; background: #111; color: #ddd; font: 13px system-ui, sans-serif; }
+    #player { width: 720px; max-width: 100%; }
+    #stats { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; max-width: 720px; }
+    .stat { background: #1c1c1f; border-radius: 6px; padding: 8px 10px; }
+    .stat b { display: block; font-size: 18px; color: #fff; font-variant-numeric: tabular-nums; }
+    #log { margin-top: 12px; font: 11px monospace; white-space: pre-wrap; color: #9ca3af; max-height: 200px; overflow: auto; max-width: 720px; }
+    code { color: #93c5fd; }
+  </style>
+</head>
+<body>
+  <div id="player"></div>
+  <div id="stats">
+    <div class="stat">Latency<b id="latency">–</b></div>
+    <div class="stat">Target<b id="target">–</b></div>
+    <div class="stat">At live edge<b id="edge">–</b></div>
+    <div class="stat">Playback rate<b id="rate">–</b></div>
+    <div class="stat">Peers<b id="peers">–</b></div>
+    <div class="stat">P2P ratio<b id="ratio">–</b></div>
+    <div class="stat">From peers<b id="p2p">–</b></div>
+    <div class="stat">From CDN<b id="http">–</b></div>
+    <div class="stat">Uploaded<b id="up">–</b></div>
+  </div>
+  <p>
+    Open this page in 2+ tabs or devices with the same URL so they join one swarm. Query params:
+    <code>?src=&lt;m3u8&gt;&amp;target=4&amp;strategy=latency|offload&amp;parts=0|1&amp;trackers=wss://a,wss://b&amp;p2p=0</code>
+  </p>
+  <div id="log"></div>
+  <script type="module">
+    // Live source via the verify server (package root = Vite root). Exposes window.player.
+    import { createVideoPlayer } from '/src/index.ts';
+
+    const params = new URLSearchParams(location.search);
+    const src = params.get('src') || 'https://demo.unified-streaming.com/k8s/live/stable/live.isml/.m3u8';
+    const target = Number(params.get('target') || 4);
+    const strategy = params.get('strategy') === 'offload' ? 'offload' : 'latency';
+    const trackers = params.get('trackers')?.split(',').map(t => t.trim()).filter(Boolean);
+    const p2pEnabled = params.get('p2p') !== '0';
+    const partLoading = params.has('parts') ? params.get('parts') !== '0' : undefined;
+
+    const $ = id => document.getElementById(id);
+    const kb = bytes => bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
+    const log = msg => { $('log').textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + $('log').textContent; };
+
+    const player = createVideoPlayer('#player', {
+      source: { src },
+      muted: true,
+      autoplay: true,
+      debug: true,
+      lowLatency: { targetLatency: target, partLoading },
+      p2p: { enabled: p2pEnabled, strategy, trackers },
+    });
+    window.player = player;
+
+    player.on('latency', e => {
+      $('latency').textContent = `${e.latency.toFixed(2)} s`;
+      $('target').textContent = `${e.targetLatency.toFixed(2)} s`;
+      $('edge').textContent = e.atLiveEdge ? 'yes' : 'NO';
+      $('rate').textContent = `${e.playbackRate.toFixed(2)}×`;
+    });
+    player.on('p2pStats', s => {
+      $('peers').textContent = s.peers;
+      $('ratio').textContent = `${Math.round(s.p2pRatio * 100)} %`;
+      $('p2p').textContent = kb(s.p2pBytes);
+      $('http').textContent = kb(s.httpBytes);
+      $('up').textContent = kb(s.uploadedBytes);
+      if (s.safeMode && !window.__safeLogged) { window.__safeLogged = true; log('P2P safe mode engaged (repeated stalls) — urgent segments now come from HTTP'); }
+    });
+    player.on('error', e => log(`error ${e.code} (fatal=${e.fatal}): ${e.message}`));
+    log(`src=${src} target=${target}s p2p=${p2pEnabled} strategy=${strategy}`);
+    setTimeout(() => { if (!player.getP2PStats() && p2pEnabled) log('P2P not active — check console (library missing / WebRTC blocked)'); }, 5000);
+  </script>
+</body>
+</html>

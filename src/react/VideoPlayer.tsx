@@ -33,6 +33,10 @@ import type {
   PlaylistItem,
   PlaylistOptions,
   PluginsConfig,
+  LowLatencyConfig,
+  P2PConfig,
+  P2PStats,
+  LatencyEvent,
 } from '../types';
 import { VideoPlayerElement, registerVideoPlayerElement } from '../webcomponent';
 
@@ -82,6 +86,10 @@ export interface VideoPlayerProps {
   chaptersVtt?: string;
   /** Read once on mount */
   plugins?: PluginsConfig;
+  /** Low-latency live HLS. Changing it rebuilds the HLS engine. */
+  lowLatency?: boolean | LowLatencyConfig;
+  /** P2P HLS delivery. Changing it rebuilds the HLS engine. */
+  p2p?: P2PConfig;
 
   className?: string;
   style?: React.CSSProperties;
@@ -103,6 +111,10 @@ export interface VideoPlayerProps {
   onStateChange?: (state: PlayerState) => void;
   onChapterChange?: (event: CustomEvent) => void;
   onPlaylistChange?: (event: CustomEvent) => void;
+  /** About once per second during live HLS playback */
+  onLatency?: (latency: LatencyEvent) => void;
+  /** About every 2 seconds while P2P is active */
+  onP2PStats?: (stats: P2PStats) => void;
 }
 
 export interface VideoPlayerRef extends PlayerAPI {
@@ -140,7 +152,7 @@ const SYNCED_KEYS = [
   'mode', 'theme', 'watermark', 'antiPiracyText', 'quality', 'controls', 'security',
   'subtitles', 'chapters', 'autoplay', 'muted', 'loop', 'preload', 'keyboardShortcuts',
   'playbackRate', 'debug', 'gestures', 'errorRecovery', 'pip', 'miniPlayer',
-  'playlist', 'playlistOptions', 'thumbnailVtt', 'chaptersVtt',
+  'playlist', 'playlistOptions', 'thumbnailVtt', 'chaptersVtt', 'lowLatency', 'p2p',
 ] as const;
 
 type SyncedConfig = Partial<Pick<PlayerConfig, typeof SYNCED_KEYS[number]>>;
@@ -177,6 +189,8 @@ function buildConfig(props: VideoPlayerProps): PlayerConfig {
     thumbnailVtt: props.thumbnailVtt,
     chaptersVtt: props.chaptersVtt,
     plugins: props.plugins,
+    lowLatency: props.lowLatency,
+    p2p: props.p2p,
   };
 }
 
@@ -255,6 +269,8 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
         'player-buffering': call((p, e) => p.onBuffering?.(e.detail?.data?.buffering)),
         'player-chapter-change': call((p, e) => p.onChapterChange?.(e)),
         'player-playlist-change': call((p, e) => p.onPlaylistChange?.(e)),
+        'player-latency': call((p, e) => p.onLatency?.(e.detail?.data)),
+        'player-p2p-stats': call((p, e) => p.onP2PStats?.(e.detail?.data)),
         'player-loaded': call(() => {}),
         'player-ratechange': call(() => {}),
       };

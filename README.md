@@ -509,7 +509,77 @@ const saved = loadProgressFromStorage('course-101-lesson-1');
 }
 ```
 
-In `live` mode the seek bar and duration are hidden, a **LIVE** badge is shown, speed selector and chapter controls are disabled.
+In `live` mode the seek bar and duration are hidden, a **LIVE** badge is shown, speed selector and chapter controls are disabled. When playback falls behind the live edge the badge turns grey — click it (or call `player.seekToLive()`) to jump back.
+
+### Low latency (3–5 s)
+
+```ts
+{
+  mode: 'live',
+  source: { src: 'https://live.example.com/stream.m3u8' },
+  lowLatency: true,                       // 4 s target, 7 s max, 1.1× catch-up
+  // or fine-tune:
+  // lowLatency: { targetLatency: 3.5, maxLatency: 6, maxCatchUpRate: 1.15, partLoading: true },
+}
+```
+
+Works with **LL-HLS** (`EXT-X-PART`; partial segments are loaded automatically) and with **short-segment HLS** (use 1–2 s segments — a 4 s target needs at least two segments of headroom). The player holds `targetLatency` behind live, speeds up to `maxCatchUpRate` when it drifts behind, and jumps back if latency exceeds `maxLatency`. After a stall hls.js temporarily widens the target, then converges again.
+
+```ts
+player.on('latency', ({ latency, targetLatency, atLiveEdge, playbackRate }) => { /* ~1/s */ });
+player.getLiveLatency();   // latest snapshot or null
+player.seekToLive();
+```
+
+### Peer-to-peer delivery (P2P mesh)
+
+HLS and LL-HLS segments can be shared between viewers over WebRTC using [p2p-media-loader](https://github.com/Novage/p2p-media-loader). Install the optional peer dependency (requires hls.js ≥ 1.5):
+
+```bash
+npm install hls.js p2p-media-loader-hlsjs
+```
+
+```ts
+{
+  source: { src: 'https://live.example.com/stream.m3u8' },
+  lowLatency: true,
+  p2p: {
+    enabled: true,
+    trackers: ['wss://tracker.example.com'],      // your WebTorrent tracker(s); default: public trackers
+    swarmId: 'channel-42',                        // default: source URL without query string
+    strategy: 'latency',                          // 'latency' (default) | 'offload'
+    // iceServers: [{ urls: 'stun:stun.example.com' }], uploadDisabled, maxPeers,
+    // core: { ...raw p2p-media-loader core options }
+  },
+}
+```
+
+| `strategy` | Behaviour |
+|---|---|
+| `'latency'` (default) | LL-HLS parts and segments needed right now come from the CDN; peers serve only what they already have, with a 1 s HTTP fallback. Latency stays exactly on target, but at 3–5 s almost nothing is shared. |
+| `'offload'` | Whole segments only (no LL parts); waits briefly for peers before HTTP. Playback settles about one segment above `targetLatency` (default target 3 s → ~5 s actual with 2 s segments). |
+
+Measured with 3 viewers on a local live stream (2 s segments, 0.5 s LL parts), 40 s each:
+
+| Config | Actual latency | Stalls | Viewers' traffic from peers |
+|---|---|---|---|
+| `lowLatency: true` (no P2P), LL-HLS | 4.03–4.08 s | 0 | — |
+| `p2p: { strategy: 'latency' }`, LL-HLS, target 4 | 4.0 s | 0 | 0 % |
+| `p2p: { strategy: 'offload' }`, target 3 (default) | **4.8–5.1 s** | **0** | **22–72 %** |
+| `p2p: { strategy: 'offload' }`, target 6 | ~8 s | 0 | 52–74 % |
+
+**Recommended for 3–5 s with P2P:** `lowLatency: true, p2p: { enabled: true, strategy: 'offload' }` with 2 s (or shorter) segments.
+
+**Safety net:** if P2P waiting ever causes repeated stalls on a live stream (2 within 20 s), the player switches that viewer to fast HTTP fallback automatically (`getP2PStats().safeMode === true`); peers stay connected and playback recovers.
+
+Reliability: if `p2p-media-loader-hlsjs` isn't installed, WebRTC is unavailable, or the P2P engine fails to start, playback continues over plain HTTP automatically. `security.authToken` is also sent on the P2P engine's own HTTP requests. For sharing to work, **segment URLs must be identical for every viewer** (per-viewer tokens in segment URLs split the swarm).
+
+```ts
+player.on('p2pStats', ({ httpBytes, p2pBytes, uploadedBytes, peers, p2pRatio }) => { /* ~every 2 s */ });
+player.getP2PStats();
+```
+
+Web component: `<video-player src="…" low-latency target-latency="4" p2p p2p-trackers="wss://a,wss://b" p2p-swarm-id="channel-42" p2p-strategy="latency">`. React: `lowLatency`, `p2p`, `onLatency` and `onP2PStats` props. CDN/UMD: load the `hls.js` and `p2p-media-loader-hlsjs` IIFE builds (globals `Hls`, `p2pml.hlsjs`) before `player.umd.js`.
 
 ---
 

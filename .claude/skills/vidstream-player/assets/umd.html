@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>vidstream UMD/CDN check</title>
+  <style>body { margin: 0; padding: 16px; background: #111; } #umd-player { width: 640px; max-width: 100%; }</style>
+</head>
+<body>
+  <div id="umd-player"></div>
+  <!-- CDN-style usage of the BUILT bundle: run `npm run build` first. hls.js is provided as a global. -->
+  <script src="/node_modules/hls.js/dist/hls.min.js"></script>
+  <script src="/dist/player.umd.js"></script>
+  <script>
+    window.umdErrors = [];
+    window.addEventListener('unhandledrejection', e => window.umdErrors.push(String((e.reason && e.reason.message) || e.reason)));
+    window.addEventListener('error', e => window.umdErrors.push(e.message));
+    window.player = VidstreamPlayer.createVideoPlayer("#umd-player", {
+      source: { src: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8' },
+      muted: true,
+    });
+  </script>
+</body>
+</html>
