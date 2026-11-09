@@ -201,10 +201,13 @@ describe('TokenRefresher', () => {
     expect(shouldRetry({}, 0, false, { code: 500 }, true)).toBe(true);
   });
 
-  it('without a refresher a 403 keeps the default decision (no retry loop)', () => {
+  it('without a refresher a 403 gets only 2 quick retries (no retry loop)', () => {
     const r = new TokenRefresher({ getFreshUrl: async () => null, maxRefreshesPerMinute: 0 });
     const cfg: any = r.hlsConfig(mocks.FakeHls);
-    expect(cfg.fragLoadPolicy.default.errorRetry.shouldRetry({}, 0, false, { code: 403 }, false)).toBe(false);
+    const shouldRetry = cfg.fragLoadPolicy.default.errorRetry.shouldRetry;
+    expect(shouldRetry({}, 0, false, { code: 403 }, false)).toBe(true);
+    expect(shouldRetry({}, 1, false, { code: 403 }, false)).toBe(true);
+    expect(shouldRetry({}, 2, false, { code: 403 }, false)).toBe(false);
   });
 
   it('xhrSetup waits for an in-flight refresh, then re-opens the request with the fresh token', async () => {

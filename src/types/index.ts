@@ -165,6 +165,7 @@ export type VidstreamErrorCode =
   | 'NETWORK_ERROR'
   | 'DECODE_ERROR'
   | 'SRC_NOT_SUPPORTED'
+  /** No longer emitted: a live stream ending is `streamEnded` + `liveStateChange`. Kept for type compatibility. */
   | 'STREAM_ENDED'
   /** Playback authorization failed (401/403, signed-URL or sdkAuth failure) */
   | 'AUTH_ERROR';
@@ -295,8 +296,14 @@ export interface P2PConfig {
  */
 export type LiveLatencyMode = 'standard' | 'low';
 
-/** Live stream lifecycle as seen by the viewer */
-export type LiveState = 'idle' | 'waiting' | 'playing' | 'reconnecting' | 'ended' | 'offline';
+/**
+ * Live stream lifecycle as seen by the viewer. `error`: a fatal error is on screen (e.g. the playback
+ * authorization failed); the live overlay is hidden and Retry (or `loadSource`) starts over.
+ */
+export type LiveState = 'idle' | 'waiting' | 'playing' | 'reconnecting' | 'ended' | 'offline' | 'error';
+
+/** Rendition to start a live stream with: 'auto' (hls.js bandwidth estimate), 'lowest', or a level index */
+export type LiveStartLevel = 'auto' | 'lowest' | number;
 
 /** Viewer-facing live texts (i18n) */
 export interface LiveMessages {
@@ -330,6 +337,17 @@ export interface LiveConfig {
   messages?: LiveMessages;
   /** Keep the screen awake while live playback runs (Screen Wake Lock API). Default: false */
   wakeLock?: boolean;
+  /**
+   * Stay in `waiting` until the live playlist holds this many segments, so a viewer joining in the
+   * first seconds of a class starts with a real buffer. Default: 4 with `latencyMode: 'standard'`, else 0.
+   * Ignored once the playlist window starts sliding (the edge keeps fewer segments than this).
+   */
+  minSegmentsToStart?: number;
+  /**
+   * First rendition (HLS). 'lowest' starts on the smallest one and lets ABR switch up after the first
+   * segments, a safe start for far-away viewers. Default: 'lowest'. `hlsConfig.startLevel` wins.
+   */
+  startLevel?: LiveStartLevel;
 }
 
 /** `liveStateChange` payload */

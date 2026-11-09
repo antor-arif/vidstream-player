@@ -142,6 +142,7 @@ export type {
   LatencyEvent,
   LiveConfig,
   LiveLatencyMode,
+  LiveStartLevel,
   TokenRefreshEvent,
   LiveState,
   LiveMessages,

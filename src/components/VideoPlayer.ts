@@ -53,6 +53,8 @@ const HEALTHY_PLAYBACK_MS = 10000;
 type P2PConfigChannelId = string | ((m3u8Url: string) => string);
 
 /** Retry policies without token refresh (status 0 / timeouts retried, 401/403 not) */
+/** Without a playback refresher a 401/403 can't fix itself: give up on the 3rd (2 quick retries) */
+const AUTH_FAST_FAIL_AFTER = 3;
 const NO_REFRESH = new TokenRefresher({ getFreshUrl: async () => null, maxRefreshesPerMinute: 0 });
 
 // Lazy-loaded streaming engines — not bundled into the main entry.
@@ -252,6 +254,10 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   private liveSeekPending = false;
   /** Watch-time statistics for the current source (used when it is live) */
   private liveStats = new LiveSessionStats();
+  /** 401/403 answers in a row without a playback refresher (fail fast after AUTH_FAST_FAIL_AFTER) */
+  private authRejections = 0;
+  /** Live start held for a thin playlist (live.minSegmentsToStart): first window seen + since when */
+  private startHold: { startSN: number; since: number } | null = null;
   private statsOverlay: StatsOverlay | null = null;
   private wakeLock: WakeLockController | null = null;
   private mediaSessionActive = false;
@@ -313,14 +319,15 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       resumeLoading: () => this.resumeLiveLoading(),
       stopLoading: () => this.stopLiveLoading(),
       onStateChange: (state, previous) => {
+        this.liveStats.onLiveState(state);
         const payload: LiveStateChangeEvent = { state, previous, sessionId: this._sessionId };
         this.emitEvent('player-live-state-change', payload);
         this.eventBus.emit('liveStateChange', payload);
       },
       onEnded: () => {
         this.emitEvent('player-stream-ended', {});
+        // An ended class is a normal outcome, not an error: streamEnded + liveStateChange only
         this.eventBus.emit('streamEnded', { src: this.currentSrc(), sessionId: this._sessionId });
-        this.reportError('STREAM_ENDED', 'The live stream has ended', false);
       },
     }, () => this.config.live, this.listeners.signal);
     this.wakeLock = new WakeLockController(this.listeners.signal);
@@ -717,7 +724,10 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
 
       if (this.isLiveStream()) {
         if (this.liveLifecycle?.isActive()) this.liveLifecycle.markEnded();
-        else this.reportError('STREAM_ENDED', 'The live stream has ended', false);
+        else {
+          this.emitEvent('player-stream-ended', {});
+          this.eventBus.emit('streamEnded', { src: this.currentSrc(), sessionId: this._sessionId });
+        }
       }
 
       // Auto-advance playlist
@@ -1007,7 +1017,9 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     code: VidstreamErrorCode,
     message: string,
     retry: (() => void) | null,
-    originalError?: unknown
+    originalError?: unknown,
+    /** Expected trouble (e.g. a class ending): retry without emitting non-fatal error events */
+    quiet = false
   ): void {
     const recovery = this.errorRecovery;
     const lifecycle = this.liveLifecycle;
@@ -1019,14 +1031,14 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     if (liveReconnect) lifecycle!.networkFailure();
 
     if (retry && recovery?.canRetry()) {
-      this.reportError(code, message, false, originalError);
+      if (!quiet) this.reportError(code, message, false, originalError);
       recovery.scheduleRetry(retry);
       return;
     }
 
     // Live viewers never get stuck on an error screen for network trouble: keep reconnecting
     if (liveReconnect && recovery?.isEnabled()) {
-      this.reportError(code, message, false, originalError);
+      if (!quiet) this.reportError(code, message, false, originalError);
       recovery.startLiveReconnect(
         () => typeof navigator === 'undefined' || navigator.onLine !== false,
         () => {
@@ -1247,6 +1259,8 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
 
   private showErrorUI(message: string, allowRetry: boolean): void {
     this.hideErrorUI();
+    // One overlay at a time: the error replaces "Reconnecting…" and the live state becomes `error`
+    this.liveLifecycle?.fail();
 
     const el = document.createElement('div');
     el.className = 'vp-error';
@@ -1378,6 +1392,8 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     this.teardownEngines();
     this.hideErrorUI();
     this.stopHealthyTimer();
+    this.authRejections = 0;
+    this.startHold = null;
     this.errorRecovery?.resetRetries();
     this.errorRecovery?.stopLiveReconnect();
     // The newest token belongs to the old source; the new one gets its own refresher
@@ -1437,6 +1453,8 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     this.loadToken++;
     this.teardownEngines();
     this.hideErrorUI();
+    this.liveLifecycle?.retrying();
+    this.authRejections = 0;
     this.state.error = undefined;
     this.rawQualities = [];
     this.qualityLevels = [];
@@ -1601,6 +1619,8 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
 
       hls.on(Hls.Events.MANIFEST_PARSED, (_: unknown, data: any) => {
         if (this.hls !== hls) return;
+        // Runs before hls.js starts loading, so the first segment comes from this level
+        this.applyLiveStartLevel(hls, data.levels ?? []);
         this.setRawQualities(
           (data.levels ?? []).map((l: any, i: number) => ({
             height: l.height ?? 0,
@@ -1614,6 +1634,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       // hls.js keeps a finite duration for live streams, so take "live" from the playlist itself
       hls.on(Hls.Events.LEVEL_LOADED, (_: unknown, data: any) => {
         if (this.hls !== hls) return;
+        this.authRejections = 0;
         const details = data?.details;
         if (typeof details?.live === 'boolean') {
           this.markLive(details.live);
@@ -1621,12 +1642,14 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
           this.liveLifecycle?.playlistUpdate(details.endSN, details.live, details.targetduration);
           // A live playlist with no segments yet: the class hasn't started
           if (details.live && !details.fragments?.length) this.liveLifecycle?.streamUnavailable();
+          else if (details.live) this.holdThinStart(hls, details);
         }
       });
 
       // All fragment traffic (HTTP or P2P) for accurate P2P stats
       hls.on(Hls.Events.FRAG_LOADED, (_: unknown, data: any) => {
         if (this.hls !== hls) return;
+        this.authRejections = 0;
         // payload may already be transferred to the transmux worker (byteLength 0) — use the largest count
         this.p2pStats?.addFragmentBytes(Math.max(data?.payload?.byteLength ?? 0, data?.part?.stats?.loaded ?? 0, data?.part ? 0 : data?.frag?.stats?.loaded ?? 0));
       });
@@ -1939,6 +1962,62 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     };
   }
 
+  /**
+   * live.startLevel (default 'lowest'): the first segment comes from the smallest rendition, then ABR
+   * switches up. hls.js would otherwise guess from abrEwmaDefaultEstimate, risky for far-away viewers.
+   * Skipped when the app chose a start (hlsConfig.startLevel, quality.defaultQuality).
+   */
+  private applyLiveStartLevel(hls: any, levels: Array<{ bitrate?: number }>): void {
+    if (!this.expectsLive() || levels.length < 2) return;
+    if (this.config.hlsConfig && 'startLevel' in this.config.hlsConfig) return;
+    const preferred = this.config.quality?.defaultQuality;
+    if (preferred !== undefined && preferred !== 'auto') return;
+    const option = this.config.live?.startLevel ?? 'lowest';
+    if (option === 'auto') return;
+    const index = typeof option === 'number'
+      ? Math.trunc(option)
+      : levels.reduce((best, l, i) => ((l.bitrate || Infinity) < (levels[best].bitrate || Infinity) ? i : best), 0);
+    if (index < 0 || index >= levels.length) return;
+    try {
+      hls.startLevel = index;
+    } catch {
+      // older hls.js without a startLevel setter
+    }
+  }
+
+  /**
+   * live.minSegmentsToStart: a viewer joining in the first seconds of a class sees a playlist with
+   * 1-3 segments, so playback would start with almost no buffer. Stay `waiting` (stop loading, poll)
+   * until the playlist is long enough — unless its window is already sliding (the edge keeps fewer
+   * segments than asked) or we have held for longer than those segments take to appear.
+   */
+  private holdThinStart(hls: any, details: any): boolean {
+    const lifecycle = this.liveLifecycle;
+    if (!lifecycle?.isActive() || lifecycle.hasStarted()) {
+      this.startHold = null;
+      return false;
+    }
+    const live = this.config.live;
+    const min = live?.minSegmentsToStart ?? (live?.latencyMode === 'standard' ? 4 : 0);
+    const count = details.fragments?.length ?? 0;
+    if (count >= min) {
+      this.startHold = null;
+      return false;
+    }
+    const startSN = typeof details.startSN === 'number' ? details.startSN : 0;
+    const now = Date.now();
+    const hold = (this.startHold ??= { startSN, since: now });
+    const maxHoldMs = min * Math.max(1, details.targetduration || 3) * 1000 + 5000;
+    if (startSN > hold.startSN || now - hold.since > maxHoldMs) return false;
+    try {
+      hls.stopLoad();
+    } catch {
+      // already destroyed
+    }
+    lifecycle.streamUnavailable();
+    return true;
+  }
+
   private handleHlsError(hls: any, data: any): void {
     const lifecycle = this.liveLifecycle;
     const status = data?.response?.code;
@@ -1951,16 +2030,39 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
         data?.details === 'levelEmptyError' ||
         (status === 404 && (data?.details === 'manifestLoadError' || data?.details === 'levelLoadError'));
       if (notThereYet) {
-        if (data.fatal) this.reportError('NETWORK_ERROR', String(data.details), false);
+        // Expected while waiting for the class: liveStateChange('waiting') says it, not an error event
         lifecycle.streamUnavailable();
         return;
       }
     }
 
+    const refresher = this.tokenRefresher;
+
+    // No refresher: a rejected URL/token can't fix itself. hls.js retries twice (1 s, 2 s) in case the
+    // 403 was transient; on the 3rd rejection stop loading and show the auth error (~3-6 s, not ~20 s)
+    if (!refresher && data?.type === 'networkError' && (status === 401 || status === 403)) {
+      this.authRejections++;
+      if (data.fatal || this.authRejections >= AUTH_FAST_FAIL_AFTER) {
+        this.authRejections = 0;
+        try {
+          hls.stopLoad();
+        } catch {
+          // already destroyed
+        }
+        this.handleAuthorizationFailure(new Error(`HTTP ${status}: ${data.details}`), () => {
+          if (this.hls === hls && hls.levels?.length) hls.startLoad();
+          else this.restartPlayback();
+        });
+      }
+      return;
+    }
+
     // hls.js recovers non-fatal errors itself
     if (!data?.fatal) return;
 
-    const refresher = this.tokenRefresher;
+    // 404 after the class started: most likely the class is ending. Keep reconnecting quietly; the
+    // lifecycle turns it into `ended` (or back to `playing`) — no error events for an expected end
+    const quiet = status === 404 && data.type === 'networkError' && !!lifecycle?.isActive() && lifecycle.hasStarted();
 
     // Signed URLs: hls.js already retried (with in-place token swaps). Last resort: fresh URL + reload
     if (data.type === 'networkError' && refresher) {
@@ -1984,15 +2086,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
             if (hls.levels?.length) hls.startLoad();
             else this.restartPlayback();
           });
-      }, data.error);
-      return;
-    }
-
-    if (data.type === 'networkError' && (status === 401 || status === 403)) {
-      this.handleAuthorizationFailure(new Error(`HTTP ${status}: ${data.details}`), () => {
-        if (this.hls === hls && hls.levels?.length) hls.startLoad();
-        else this.restartPlayback();
-      });
+      }, data.error, quiet);
       return;
     }
 
@@ -2003,7 +2097,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
         // startLoad() resumes fragment loading; a failed manifest needs a fresh instance
         if (hls.levels?.length) hls.startLoad();
         else this.restartPlayback();
-      }, data.error);
+      }, data.error, quiet);
     } else if (data.type === 'mediaError') {
       this.handlePlaybackFailure('DECODE_ERROR', message, () => {
         if (this.hls !== hls) return;

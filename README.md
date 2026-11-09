@@ -526,6 +526,12 @@ In `live` mode the seek bar and duration are hidden, a **LIVE** badge is shown, 
 | `'standard'` | HLS (TS), e.g. 3 s segments | `lowLatencyMode: false`, `liveSyncDurationCount: 3`, `liveMaxLatencyDurationCount: 10` | ~9 s |
 | `'low'` | LL-HLS (`EXT-X-PART`) | `lowLatencyMode: true`, `maxLiveSyncPlaybackRate: 1.1`, **no `liveSync*`** (follows `PART-HOLD-BACK`) | ~1.5 s with 0.5 s parts |
 
+`'low'` is not recommended for students far from the edge (RTT of 150 ms or more): with 0.5 s parts there is almost no buffer to absorb a slow request, so stalls are much more likely. Use `'standard'` for them.
+
+**Start-up for far-away viewers:**
+- `live.startLevel` (default `'lowest'`): the first segment comes from the smallest rendition, then ABR switches up. Use `'auto'` for the hls.js bandwidth guess, or a level index. `hlsConfig.startLevel` and `quality.defaultQuality` win.
+- `live.minSegmentsToStart` (default 4 with `'standard'`, 0 otherwise): someone joining in the first seconds of a class stays in `waiting` until the playlist holds that many segments, so playback starts with a real buffer instead of 0.2–2 s. The hold ends early if the edge's playlist window is already sliding (it keeps fewer segments than asked).
+
 Never combine `'low'` with `liveSyncDuration*` (via `hlsConfig`): it overrides part-hold-back targeting (measured 9.5 s instead of 1.5 s). Live streams also default to `backBufferLength: 30`, so memory stays flat on low-end phones during multi-hour classes.
 
 Need any other hls.js setting? Pass `hlsConfig` (merged last; a custom `xhrSetup` still runs). Use `onHlsCreated(hls, Hls)` to reach the instance before it loads, or call `player.getHls()` / `player.getDash()` afterwards.
@@ -554,7 +560,7 @@ URLs such as `https://EDGE/t/{exp}/{nonce}/{sig}/{app}/{stream}/{file}` or Bunny
 - **Old API still works:** `refreshPlaybackToken` returning a full `https://` URL does the same. Returning a bare token still means "new auth header", as before.
 - **Events:** `tokenRefreshed` / `tokenRefreshFailed`. Tokens never appear in events or debug logs.
 
-Without a refresher, an expired URL ends in a clear `AUTH_ERROR` overlay. There is no retry loop.
+Without a refresher, an expired URL ends in a clear `AUTH_ERROR` overlay within a few seconds: two quick retries in case the 403 was transient, then loading stops and the live state becomes `error`. There is no retry loop. Retry starts over.
 
 #### Stream lifecycle
 
@@ -566,12 +572,15 @@ With `mode: 'live'` (or any `live` config), viewers see the stream's state inste
 | `reconnecting` | Playlist stopped advancing, or network errors after the start | Spinner + "Reconnecting…" (retries indefinitely; no error screen) |
 | `ended` | Playlist stuck for `live.endedTimeout` (20 s) **and** 404s, `#EXT-X-ENDLIST`, or `player.markStreamEnded()` | "Live class has ended" (no Retry; loading stops) |
 | `offline` | Browser `offline` event | "No internet connection" (resumes at once on `online`) |
+| `error` | A fatal error is shown (e.g. `AUTH_ERROR`) | The error overlay only; the live overlay hides. Retry (or `loadSource`) starts over |
+
+Expected states are not errors: polling a class that hasn't started, a 404 while a class ends, and the end itself emit `liveStateChange` / `streamEnded`, never `error`. `getLiveStats()` drops a stall that is still open when the class ends, and rebuffer time only runs in `playing` / `reconnecting`.
 
 ```ts
 player.on('liveStateChange', ({ state, previous }) => {});
 player.on('streamEnded', () => {});
 player.markStreamEnded();      // e.g. when your backend pushes its `stream.ended` webhook
-player.getLiveState();         // 'idle' | 'waiting' | 'playing' | 'reconnecting' | 'ended' | 'offline'
+player.getLiveState();         // 'idle' | 'waiting' | 'playing' | 'reconnecting' | 'ended' | 'offline' | 'error'
 ```
 
 Translate the texts with `live.messages: { waiting, reconnecting, ended, offline, tapToUnmute, goLive }`. Set `live.overlays: false` to draw your own UI from `liveStateChange`.
@@ -788,7 +797,7 @@ player.once('ended', handler); // fire once then remove
 | `chapterChange` | `{ chapter, index, sessionId }` |
 | `playlistChange` | `{ index, item, sessionId }` |
 | `buffering` | `{ currentTime, duration, sessionId }` |
-| `error` | `{ code, message }` |
+| `error` | `{ code, message }`: real failures only. Not emitted for expected live states (waiting for a class, a class ending) |
 | `latency` | `{ latency, targetLatency, atLiveEdge, playbackRate, sessionId }` (live, ~1/s) |
 | `liveEdgeChange` | `{ atLiveEdge, latencySec, sessionId }` |
 | `liveStateChange` | `{ state, previous, sessionId }` |

@@ -197,8 +197,8 @@ export class TokenRefresher {
     ): boolean => {
       const code = loaderResponse?.code;
       if (code === 403 || code === 401) {
-        // No way to get a fresh URL: retrying the same rejected URL is pointless
-        if (this.maxPerMinute <= 0) return defaultDecision;
+        // No way to get a fresh URL: only 2 quick retries in case the rejection was transient
+        if (this.maxPerMinute <= 0) return retryCount < 2;
         if (Date.now() - this.lastRefreshAt > 3000) this.refresh(String(code)).catch(() => {});
         return retryCount < this.maxRetries;
       }

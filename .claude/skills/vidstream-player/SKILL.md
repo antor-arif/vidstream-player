@@ -124,7 +124,7 @@ Instructly Media Engine URLs carry the token in the **path** (`/t/{exp}/{nonce}/
   - It generates its media with ffmpeg, or with Docker `linuxserver/ffmpeg` when ffmpeg isn't on PATH.
 
 ## Live UX (P1, 2026-11-09)
-- **`src/streaming/liveLifecycle.ts`** (`LiveLifecycle`): states `idle | waiting | playing | reconnecting | ended | offline`, each with an overlay (`.vp-live-overlay`, texts from `live.messages`) and the event `liveStateChange` / `player-live-state-change`.
+- **`src/streaming/liveLifecycle.ts`** (`LiveLifecycle`): states `idle | waiting | playing | reconnecting | ended | offline | error`, each with an overlay (`.vp-live-overlay`, texts from `live.messages`) and the event `liveStateChange` / `player-live-state-change`.
   - It is active when `mode: 'live'`, when a `live` config is set, or when hls.js reports `details.live`.
   - **Waiting:** a manifest/level 404 or `levelEmptyError` before the first frame (or a live playlist with no segments). The player then restarts every `live.offlinePollInterval` (5 s).
   - **Reconnecting:** the playlist hasn't advanced for ≥ max(8 s, 3 × target duration), or there are network failures after the start. Live network failures never show the error overlay; once the retry budget is used up the player keeps reconnecting in the background.
@@ -157,6 +157,19 @@ Instructly Media Engine URLs carry the token in the **path** (`/t/{exp}/{nonce}/
 - **`components/StatsOverlay.ts`:** `controls.stats` (`true` | `'visible'`). Toggled with the `i` key (only when enabled) or `toggleStats(force?)`. Rendered with text only (no innerHTML) and refreshed once a second while visible.
 - **`services/mediaSession.ts`:** `applyMediaSession` runs on `play` (title and poster; play/pause; seek actions only for VOD), playbackState follows play and pause, and the handlers are cleared on destroy. `mediaSession: false` opts out.
   - `WakeLockController` is used when `live.wakeLock` is set: it acquires on `playing`, releases on pause, ended and destroy, and re-acquires on `visibilitychange`.
+## Live polish (fixes from the real-edge run, branch fix/live-polish)
+- **`error` live state:** `showErrorUI` calls `liveLifecycle.fail()` (the overlay hides, so only one overlay shows at a time). `restartPlayback` calls `retrying()`, which goes to `reconnecting`, or `idle` if the stream never started. Offline, `networkFailure` and `streamUnavailable` don't override `error`.
+- **No refresher + 401/403:** `authRejections` counts them in `handleHlsError` and resets on FRAG_LOADED / LEVEL_LOADED. On the 3rd (or the first fatal one) it calls `hls.stopLoad()` and then `handleAuthorizationFailure`. `NO_REFRESH.shouldRetry` allows 2 retries for 403s.
+- **No `error` events for expected states:**
+  - waiting-poll 404s;
+  - fatal 404s after the start (`handlePlaybackFailure(..., quiet)`);
+  - the class end.
+  `STREAM_ENDED` is no longer emitted.
+- **Rebuffer accounting:** `LiveSessionStats.onLiveState(state)` is fed from `onStateChange`. Rebuffer time only accrues in `playing` / `reconnecting`. A stall still open at `ended` is removed (time and count).
+- **`live.minSegmentsToStart`** (`holdThinStart`, default 4 for `'standard'`): a thin first playlist leads to `stopLoad` + `streamUnavailable` (waiting + poll). The hold is released if `startSN` advances (the window is sliding) or after min × target + 5 s.
+- **`live.startLevel`** (default `'lowest'`): `hls.startLevel` is set in MANIFEST_PARSED. It is skipped when `hlsConfig.startLevel` or `quality.defaultQuality` is set, and for VOD.
+- Browser scenarios: `polish.mjs` in the session scratchpad (scenarios `auth`, `lifecycle`, `thin`, `startlevel`, `autoplay`).
+
 - **Test-server gotcha:** `signed-live-server.mjs` TS media now loops. Before this fix, scripts that didn't call `/admin/state?s=live` ran off the end of the 600 s of media, and the frozen edge looked exactly like a player stall bug.
 
 ## Rules that protect users of the package
