@@ -128,6 +128,11 @@ export interface ControlsConfig {
   liveIndicator?: boolean;
   /** Reserved for a future settings menu — currently has no effect */
   settings?: boolean;
+  /**
+   * Playback statistics overlay (latency, buffer, bitrate/resolution, dropped frames, P2P) for support.
+   * true = available via player.toggleStats() and the `i` key; 'visible' = also shown at start. Default: false
+   */
+  stats?: boolean | 'visible';
   chapters?: boolean;
   /** Seconds skipped by the rewind/forward buttons and arrow keys. Default: 10 */
   seekDuration?: number;
@@ -178,6 +183,13 @@ export interface ErrorRecoveryConfig {
   maxRetries?: number;
   /** Default: 2000ms */
   retryDelay?: number;
+  /** Upper bound for the exponential backoff. Default: 30000ms */
+  maxRetryDelay?: number;
+  /**
+   * Retry budget while playing a live stream. Default: 10. Retries never run out while the
+   * browser is offline (`navigator.onLine === false`).
+   */
+  liveMaxRetries?: number;
   onError?: (error: VidstreamError) => void;
 }
 
@@ -230,10 +242,31 @@ export interface LowLatencyConfig {
  */
 export type P2PStrategy = 'latency' | 'offload';
 
-/** Peer-to-peer segment delivery for HLS via p2p-media-loader (optional peer dependency `p2p-media-loader-hlsjs`). */
+/**
+ * P2P engine:
+ * - 'p2p-media-loader' (default): open-source WebTorrent trackers (optional peer `p2p-media-loader-hlsjs`)
+ * - 'swarmcloud': SwarmCloud (optional peer `@swarmcloud/hls`, needs a SwarmCloud `token` for custom channel ids)
+ */
+export type P2PProvider = 'p2p-media-loader' | 'swarmcloud';
+
+/** Peer-to-peer segment delivery for HLS (p2p-media-loader or SwarmCloud). */
 export interface P2PConfig {
   /** Default: false */
   enabled?: boolean;
+  /** Default: 'p2p-media-loader' */
+  provider?: P2PProvider;
+  /** SwarmCloud: account token (required for a custom channelId) */
+  token?: string;
+  /** SwarmCloud: tracker region, e.g. 'eu' | 'hk' | 'us' | 'cn' */
+  trackerZone?: string;
+  /**
+   * SwarmCloud: viewers with the same channel id share segments. Default: host + path with the URL token
+   * removed (`/t/{exp}/{nonce}/{sig}` or `/bcdn_token=…`) — the host is KEPT because origin and edges
+   * number segments differently.
+   */
+  channelId?: string | ((m3u8Url: string) => string);
+  /** SwarmCloud: raw P2pEngineHls config, merged last */
+  swarmcloud?: Record<string, unknown>;
   /** WebTorrent tracker URLs (wss://…). Default: p2p-media-loader's public trackers */
   trackers?: string[];
   /**
@@ -253,6 +286,74 @@ export interface P2PConfig {
   core?: Record<string, unknown>;
 }
 
+/**
+ * Live latency preset (takes priority over `lowLatency` when set):
+ * - 'standard': regular HLS (e.g. 3 s TS segments): `lowLatencyMode: false`, `liveSyncDurationCount: 3`
+ *   (~3 segments behind live), `liveMaxLatencyDurationCount: 10`.
+ * - 'low': LL-HLS (EXT-X-PART): `lowLatencyMode: true`, `maxLiveSyncPlaybackRate: 1.1` and **no**
+ *   `liveSync*` settings, so hls.js follows the playlist's PART-HOLD-BACK (~1.5 s with 0.5 s parts).
+ */
+export type LiveLatencyMode = 'standard' | 'low';
+
+/** Live stream lifecycle as seen by the viewer */
+export type LiveState = 'idle' | 'waiting' | 'playing' | 'reconnecting' | 'ended' | 'offline';
+
+/** Viewer-facing live texts (i18n) */
+export interface LiveMessages {
+  /** Default: "Live class hasn't started yet" */
+  waiting?: string;
+  /** Default: "Reconnecting…" */
+  reconnecting?: string;
+  /** Default: "Live class has ended" */
+  ended?: string;
+  /** Default: "No internet connection" */
+  offline?: string;
+  /** Default: "Tap to unmute" */
+  tapToUnmute?: string;
+  /** Default: "Go live" (badge tooltip when behind) */
+  goLive?: string;
+}
+
+/** Live streaming options */
+export interface LiveConfig {
+  /** Default: not set (falls back to `lowLatency`, then the player defaults) */
+  latencyMode?: LiveLatencyMode;
+  /** After a pause, resume at the live edge instead of where playback stopped. Default: true */
+  resumeAtLiveEdge?: boolean;
+  /** How often to check whether a not-yet-started stream is live (ms). Default: 5000 */
+  offlinePollInterval?: number;
+  /** Playlist not advancing for this long (ms) AND 404s → the stream has ended. Default: 20000 */
+  endedTimeout?: number;
+  /** Show the "hasn't started / reconnecting / ended / offline" overlays. Default: true */
+  overlays?: boolean;
+  /** Overlay and pill texts */
+  messages?: LiveMessages;
+  /** Keep the screen awake while live playback runs (Screen Wake Lock API). Default: false */
+  wakeLock?: boolean;
+}
+
+/** `liveStateChange` payload */
+export interface LiveStateChangeEvent {
+  state: LiveState;
+  previous: LiveState;
+  sessionId: string;
+}
+
+/** `liveEdgeChange` payload */
+export interface LiveEdgeChangeEvent {
+  atLiveEdge: boolean;
+  /** Seconds behind the live edge */
+  latencySec: number;
+  sessionId: string;
+}
+
+/** `autoplayBlocked` payload */
+export interface AutoplayBlockedEvent {
+  /** Playback started muted instead (viewer can tap to unmute) */
+  mutedFallback: boolean;
+  sessionId: string;
+}
+
 /** Snapshot of P2P traffic for the current source */
 export interface P2PStats {
   /** Bytes downloaded from the CDN/origin */
@@ -267,6 +368,17 @@ export interface P2PStats {
   p2pRatio: number;
   /** True after repeated stalls switched P2P to fast HTTP fallback for the rest of this source */
   safeMode: boolean;
+  sessionId: string;
+}
+
+/** `tokenRefreshed` / `tokenRefreshFailed` payload. Never contains the token. */
+export interface TokenRefreshEvent {
+  /** What triggered it: '403', '401', 'fatal', 'native', 'manual', … */
+  reason: string;
+  /** Host the token is for (refreshed) */
+  host?: string | null;
+  /** Error message (failed) */
+  error?: string;
   sessionId: string;
 }
 
@@ -413,7 +525,8 @@ export type AnalyticsEventName =
   | 'session_start'
   | 'session_end'
   | 'milestone_reached'
-  | 'progress_saved';
+  | 'progress_saved'
+  | 'token_refreshed';
 
 export interface AnalyticsEventPayload {
   eventName: AnalyticsEventName;
@@ -462,12 +575,35 @@ export interface LMSProgressData {
   videoId: string;
   userId?: string;
   currentTime: number;
+  /** 0 for live streams (never Infinity) */
   duration: number;
+  /** Always 0 for live streams (no fixed duration) — use watchedSeconds */
   watchedPercentage: number;
   milestonesReached: ProgressMilestone[];
   hasStarted: boolean;
   isCompleted: boolean;
   lastUpdated: string;
+  /** Live streams: true */
+  isLive?: boolean;
+  /** Live streams: seconds actually played (excludes pauses and rebuffering) */
+  watchedSeconds?: number;
+  /** Live streams: first frame (ISO time) */
+  joinedAt?: string | null;
+  /** Live streams: last moment the viewer was watching (ISO time) */
+  lastSeenAt?: string | null;
+}
+
+/** Live session watch statistics (LMS `onProgressSave`, analytics heartbeats, `getLiveStats()`) */
+export interface LiveWatchStats {
+  watchedSeconds: number;
+  joinedAt: string | null;
+  lastSeenAt: string | null;
+  rebufferCount: number;
+  rebufferSeconds: number;
+  /** Average seconds behind live, or null before the first sample */
+  averageLatency: number | null;
+  qualitySwitches: number;
+  tokenRefreshes: number;
 }
 
 export interface LMSProgressConfig {
@@ -492,10 +628,29 @@ export interface SecurityConfig {
   /** Called with every source URL before it is loaded; resolve to the signed URL to play */
   getSignedPlaybackUrl?: (originalUrl: string) => Promise<string>;
   /**
-   * Called once when a manifest/segment request is rejected (HTTP 401/403) or signing fails.
-   * Resolve to a new token; playback is then retried with it.
+   * Called when a manifest/segment request is rejected (HTTP 401/403) or signing fails.
+   *
+   * - Resolve to a **full fresh playback URL** (`https://…`) for path-signed / IP-bound URLs
+   *   (`/t/{exp}/{nonce}/{sig}/…`, Bunny `/bcdn_token=…/…`). It MUST be for the **same stream on the
+   *   same host** (same edge / same Bunny pull zone): hosts number segments differently. The player
+   *   swaps only the token part of every URL in place, so HLS playback continues without a reload.
+   * - Or resolve to a bare token (not a URL): it replaces `authToken` for the auth header.
+   *
+   * HLS via hls.js: called at most once per 403 burst and at most 4 times per minute.
+   * Other engines: called once per failure.
    */
   refreshPlaybackToken?: () => Promise<string>;
+  /**
+   * Explicit form of the URL refresh above: resolve to a full fresh URL for the same stream and host.
+   * Takes precedence over `refreshPlaybackToken` for URL refreshes.
+   */
+  refreshPlaybackUrl?: () => Promise<string>;
+  /**
+   * Pattern that finds the token prefix in a URL **path**. Group 1 = token prefix, group 2 = the rest of
+   * the path. Default matches `/t/{exp}/{nonce}/{sig}` and `/bcdn_token=…`:
+   * `^(/t/\d+/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+|/bcdn_token=[^/]*)(/.*)$`
+   */
+  tokenPrefixPattern?: RegExp;
   /** Called when playback authorization fails and cannot be recovered */
   onPlaybackAuthorizationError?: (error: Error) => void | Promise<void>;
   /**
@@ -585,6 +740,23 @@ export interface PlayerConfig {
   lowLatency?: boolean | LowLatencyConfig;
   /** Peer-to-peer HLS delivery (requires `p2p-media-loader-hlsjs` and hls.js ≥ 1.5) */
   p2p?: P2PConfig;
+  /** Live streaming options (latency preset, …) */
+  live?: LiveConfig;
+  /**
+   * Extra hls.js config, merged over the player's defaults and latency settings. Token-refresh
+   * settings are applied last; a custom `xhrSetup` here still runs (after the URL swap).
+   */
+  hlsConfig?: Record<string, any>;
+  /**
+   * OS media controls (lock screen / notification): title + poster artwork, play/pause; seeking only
+   * for VOD. Default: true
+   */
+  mediaSession?: boolean;
+  /**
+   * Called with every hls.js instance right after `new Hls()` and before `loadSource`/`attachMedia`
+   * (e.g. to attach a P2P engine). `Hls` is the hls.js class. Also emitted as bus event `hlsCreated`.
+   */
+  onHlsCreated?: (hls: any, Hls: any) => void;
   autoplay?: boolean;
   muted?: boolean;
   loop?: boolean;
@@ -666,6 +838,20 @@ export interface PlayerEvents {
   'player-latency': PlayerEventDetail<LatencyEvent>;
   /** About every 2 seconds while P2P is active */
   'player-p2p-stats': PlayerEventDetail<P2PStats>;
+  /** A fresh signed URL / token was obtained and applied */
+  'player-token-refreshed': PlayerEventDetail<TokenRefreshEvent>;
+  /** Getting a fresh signed URL / token failed */
+  'player-token-refresh-failed': PlayerEventDetail<TokenRefreshEvent>;
+  /** hls.js instance created (before loadSource/attachMedia) */
+  'player-hls-created': PlayerEventDetail<{ hls: any }>;
+  /** Live lifecycle: waiting / playing / reconnecting / ended / offline */
+  'player-live-state-change': PlayerEventDetail<LiveStateChangeEvent>;
+  /** Playback moved away from / back to the live edge */
+  'player-live-edge-change': PlayerEventDetail<LiveEdgeChangeEvent>;
+  /** The live stream ended (playlist stopped + 404, ENDLIST, or markStreamEnded()) */
+  'player-stream-ended': PlayerEventDetail;
+  /** Autoplay was blocked by the browser */
+  'player-autoplay-blocked': PlayerEventDetail<AutoplayBlockedEvent>;
 }
 
 // ============================================================================
@@ -731,10 +917,22 @@ export interface VidstreamPlayerInstance {
   // Live / P2P
   /** Jump to the live edge (at the target latency). No-op for VOD. */
   seekToLive(): void;
+  /** Alias of seekToLive() */
+  goToLive(): void;
+  /** Tell the player the live stream has ended (e.g. from a `stream.ended` webhook push) */
+  markStreamEnded(): void;
+  /** Current live lifecycle state */
+  getLiveState(): LiveState;
+  /** Watch statistics of the current live session, or null for VOD */
+  getLiveStats(): LiveWatchStats | null;
   /** Current live latency snapshot, or null when not playing a live HLS stream */
   getLiveLatency(): LatencyEvent | null;
   /** P2P traffic snapshot, or null when P2P is not active */
   getP2PStats(): P2PStats | null;
+  /** The active hls.js instance, or null */
+  getHls(): any;
+  /** The active dash.js MediaPlayer, or null */
+  getDash(): any;
 
   // Identity
   readonly sessionId: string;

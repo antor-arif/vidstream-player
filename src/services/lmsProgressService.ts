@@ -13,6 +13,7 @@
 import type {
   LMSProgressConfig,
   LMSProgressData,
+  LiveWatchStats,
   ProgressMilestone,
 } from '../types';
 
@@ -39,6 +40,8 @@ export class LMSProgressManager {
   private hasEmittedFirstPlay = false;
   private completionHandled = false;
   private reachedMilestones: Set<ProgressMilestone> = new Set();
+  /** Live stream: watch time replaces percentage / milestones / completion */
+  private liveStats: (() => LiveWatchStats) | null = null;
 
   constructor(config: LMSProgressConfig) {
     this.config = config;
@@ -65,7 +68,7 @@ export class LMSProgressManager {
    */
   initialize(duration: number): void {
     if (this.isDestroyed) return;
-    this.progressData.duration = duration;
+    this.progressData.duration = Number.isFinite(duration) && !this.liveStats ? duration : 0;
 
     // Start auto-save timer. initialize() runs on every loadedmetadata (playlist items, retries),
     // so replace the previous timer instead of stacking another one.
@@ -107,8 +110,24 @@ export class LMSProgressManager {
   /**
    * Update progress with current playback time
    */
+  /** Switch to live tracking (watch time) — or back to VOD with null */
+  setLiveStats(provider: (() => LiveWatchStats) | null): void {
+    this.liveStats = provider;
+    if (provider) {
+      this.progressData.duration = 0;
+      this.progressData.watchedPercentage = 0;
+    }
+  }
+
   updateProgress(currentTime: number, duration: number): void {
     if (this.isDestroyed) return;
+
+    if (this.liveStats) {
+      // No fixed duration: percentages, milestones and completion don't apply to live
+      this.progressData.currentTime = Number.isFinite(currentTime) ? currentTime : 0;
+      this.progressData.lastUpdated = new Date().toISOString();
+      return;
+    }
 
     this.progressData.currentTime = currentTime;
     this.progressData.duration = duration;
@@ -132,7 +151,7 @@ export class LMSProgressManager {
    * onComplete fires only once per session.
    */
   handleCompletion(): void {
-    if (this.isDestroyed || this.completionHandled) return;
+    if (this.isDestroyed || this.completionHandled || this.liveStats) return;
     this.completionHandled = true;
     this.progressData.isCompleted = true;
     this.progressData.watchedPercentage = 100;
@@ -178,6 +197,18 @@ export class LMSProgressManager {
    * Get current progress data (immutable copy)
    */
   getProgress(): LMSProgressData {
+    if (this.liveStats) {
+      const live = this.liveStats();
+      return {
+        ...this.progressData,
+        duration: 0,
+        watchedPercentage: 0,
+        isLive: true,
+        watchedSeconds: live.watchedSeconds,
+        joinedAt: live.joinedAt,
+        lastSeenAt: live.lastSeenAt,
+      };
+    }
     return { ...this.progressData };
   }
 

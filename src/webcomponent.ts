@@ -35,6 +35,9 @@ import type {
   LowLatencyConfig,
   P2PConfig,
   P2PStats,
+  LiveConfig,
+  LiveState,
+  LiveWatchStats,
   LatencyEvent,
 } from './types';
 
@@ -89,6 +92,8 @@ const OBSERVED_ATTRIBUTES = [
   'debug',
   // Low latency + P2P
   'low-latency', 'target-latency', 'p2p', 'p2p-trackers', 'p2p-swarm-id', 'p2p-strategy',
+  // Live
+  'latency-mode',
 ] as const;
 
 // ============================================================================
@@ -337,7 +342,14 @@ export class VideoPlayerElement extends SSRHTMLElement {
       subtitles,
       lowLatency: this.buildLowLatencyFromAttributes(),
       p2p: this.buildP2PFromAttributes(),
+      live: this.buildLiveFromAttributes(),
     };
+  }
+
+  /** latency-mode="standard" | "low" */
+  private buildLiveFromAttributes(): LiveConfig | undefined {
+    const mode = this.getAttribute('latency-mode');
+    return mode === 'standard' || mode === 'low' ? { latencyMode: mode } : undefined;
   }
 
   /** low-latency (boolean) + target-latency (seconds; implies low-latency) */
@@ -448,6 +460,10 @@ export class VideoPlayerElement extends SSRHTMLElement {
       case 'low-latency':
       case 'target-latency':
         this.player.updateConfig({ lowLatency: this.buildLowLatencyFromAttributes() ?? false });
+        break;
+
+      case 'latency-mode':
+        this.player.updateConfig({ live: this.buildLiveFromAttributes() ?? {} });
         break;
 
       case 'p2p':
@@ -648,6 +664,19 @@ export class VideoPlayerElement extends SSRHTMLElement {
   seekToLive(): void { this.player?.seekToLive(); }
   getLiveLatency(): LatencyEvent | null { return this.player?.getLiveLatency() ?? null; }
   getP2PStats(): P2PStats | null { return this.player?.getP2PStats() ?? null; }
+  /** Active hls.js instance, or null */
+  getHls(): any { return this.player?.getHls() ?? null; }
+  /** Active dash.js MediaPlayer, or null */
+  getDash(): any { return this.player?.getDash() ?? null; }
+  /** Alias of seekToLive() */
+  goToLive(): void { this.player?.goToLive(); }
+  /** Show the "ended" state (e.g. after a stream.ended push from your backend) */
+  markStreamEnded(): void { this.player?.markStreamEnded(); }
+  getLiveState(): LiveState { return this.player?.getLiveState() ?? 'idle'; }
+  /** Watch statistics of the live session (null for VOD) */
+  getLiveStats(): LiveWatchStats | null { return this.player?.getLiveStats() ?? null; }
+  /** Show/hide the statistics overlay; returns whether it is visible */
+  toggleStats(force?: boolean): boolean { return this.player?.toggleStats(force) ?? false; }
 
   // ============================================================================
   // CONVENIENCE PROPERTIES

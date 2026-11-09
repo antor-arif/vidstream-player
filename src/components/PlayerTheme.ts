@@ -1149,6 +1149,132 @@ export function getBaseStyles(): string {
       50% { opacity: 0.4; }
     }
 
+    /* Live lifecycle overlay: hasn't started / reconnecting / ended / offline */
+    .vp-live-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 40;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 16px;
+      text-align: center;
+      color: #fff;
+      background: rgba(0, 0, 0, 0.72);
+      pointer-events: none;
+    }
+
+    .vp-live-overlay[hidden] {
+      display: none;
+    }
+
+    .vp-live-overlay-text {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+      line-height: 1.4;
+      max-width: 420px;
+    }
+
+    .vp-live-overlay-spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid rgba(255, 255, 255, 0.25);
+      border-top-color: var(--vp-accent-color, #ef4444);
+      border-radius: 50%;
+      animation: vp-live-spin 0.9s linear infinite;
+    }
+
+    .vp-live-overlay[data-state="ended"] .vp-live-overlay-spinner {
+      display: none;
+    }
+
+    .vp-live-overlay[data-state="waiting"] .vp-live-overlay-spinner,
+    .vp-live-overlay[data-state="offline"] .vp-live-overlay-spinner {
+      animation-duration: 2.4s;
+    }
+
+    @keyframes vp-live-spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* While an overlay is shown the buffering spinner would duplicate it */
+    .vp-live-overlay-active .vp-loading {
+      display: none;
+    }
+
+    /* Autoplay fell back to muted: "Tap to unmute" */
+    .vp-unmute-pill {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 45;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border: none;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.75);
+      color: #fff;
+      font: 600 13px/1 system-ui, sans-serif;
+      cursor: pointer;
+    }
+
+    .vp-unmute-pill:hover,
+    .vp-unmute-pill:focus-visible {
+      background: var(--vp-accent-color, #ef4444);
+    }
+
+    /* Stats overlay (controls.stats) */
+    .vp-stats {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 46;
+      min-width: 220px;
+      max-width: calc(100% - 24px);
+      padding: 10px 28px 10px 12px;
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.8);
+      color: #e5e7eb;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .vp-stats[hidden] {
+      display: none;
+    }
+
+    .vp-stats-body {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 2px 12px;
+      margin: 0;
+    }
+
+    .vp-stats-body dt {
+      color: #9ca3af;
+    }
+
+    .vp-stats-body dd {
+      margin: 0;
+      word-break: break-word;
+    }
+
+    .vp-stats-close {
+      position: absolute;
+      top: 4px;
+      right: 6px;
+      border: none;
+      background: none;
+      color: #9ca3af;
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+    }
+
     /* Responsive - Tablet */
     @media (max-width: 768px) {
       .video-player-container {

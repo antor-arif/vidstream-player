@@ -99,6 +99,66 @@ Config: `lowLatency: true | { targetLatency, maxLatency, maxCatchUpRate, partLoa
 - **Default live test stream:** https://demo.unified-streaming.com/k8s/live/stable/live.isml/.m3u8 (1.92 s segments, no parts).
 - Measured results, the stall guard (`checkP2PStall` → `safeMode`), the offload default (target 3 s ≈ 5 s actual) and the real-stream test tooling are in known-issues KI-50 and testing.md §7. Recommended 3–5 s + P2P config: `lowLatency: true, p2p: { enabled: true, strategy: 'offload' }`.
 
+## Signed / IP-bound live URLs (added 2026-11-09, branch feat/live-streaming)
+
+Instructly Media Engine URLs carry the token in the **path** (`/t/{exp}/{nonce}/{sig}/…`, Bunny `/bcdn_token=…/…`) and are bound to the viewer's IP; the edge answers 403 on expiry or an IP change.
+- **`src/streaming/tokenRefresh.ts`** (`TokenRefresher`): TypeScript port of the Media Engine's `tools/player/hls-token-refresh.js`. One refresher per loaded source, attached to every hls.js instance rebuilt for it. It handles:
+  - the `xhrSetup` URL swap, which waits for an in-flight refresh;
+  - load policies with `maxNumRetry: 6` and a `shouldRetry` that refreshes on 401/403 and retries status 0 / timeouts;
+  - rewriting already-parsed fragment/part URLs (needed by P2P loaders);
+  - a limit of 4 refreshes per minute.
+- **Configuration:** enabled by `security.refreshPlaybackUrl`, or by `security.refreshPlaybackToken` when it resolves to an `http(s)://` URL. A bare token still means "new auth header".
+  - The token pattern is configurable with `security.tokenPrefixPattern`.
+  - `config.source.src` is never changed, because the React wrapper would reload. Restarts use `tokenRefresher.rewrite(src)`.
+- **Load policies:** installed for every hls.js load. Without a refresher, a 401/403 keeps hls.js's default (no retry, then the AUTH_ERROR UI).
+- **Fatal network error with a refresher:** refresh, then `hls.loadSource(fresh)` (the last resort), within the `errorRecovery` budget.
+- **Native HLS:** on `error`, or on `stalled` plus a probe that returns 403, the player refreshes and sets `video.src` again.
+- **Retry budget:** refilled after 10 s of uninterrupted playback, not on the first `playing` event. Live streams use `errorRecovery.liveMaxRetries` (default 10), the backoff is capped at `maxRetryDelay` (30 s), and the budget is unlimited while `navigator.onLine === false`.
+- **hls.js config precedence:** `live.latencyMode` ('standard' | 'low'; 'low' never sets `liveSync*`) wins over `lowLatency`, which wins over the legacy defaults. `config.hlsConfig` merges on top. The token-refresh settings come last, and a consumer's own `*LoadPolicy` wins.
+  - Live back buffer is 30 s, and `liveMaxLatencyDurationCount` is 10 for count-based sync, applied at LEVEL_LOADED when the playlist is live.
+- **API:** `onHlsCreated(hls, Hls)` runs before `loadSource`/`attachMedia`. Also bus `hlsCreated`, DOM `player-hls-created`, `getHls()` and `getDash()`.
+- **Events:** `tokenRefreshed` / `tokenRefreshFailed` (DOM: `player-token-refreshed`, `player-token-refresh-failed`). They never contain the token. Use `redactUrl()` when logging URLs.
+- **Test server:** `scripts/signed-live-server.mjs [8098]` is a local stand-in for the edge.
+  - It uses the same token algorithm as `sign-url.js`, a 3 s TS ladder (720p + 360p) and LL-HLS 0.5 s parts.
+  - The fake backend is `/api/sign?ttl=&kind=hls|llhls`. `/admin/ip?ip=` simulates a network switch, and `/admin/state?s=waiting|live|ended` drives the lifecycle.
+  - It generates its media with ffmpeg, or with Docker `linuxserver/ffmpeg` when ffmpeg isn't on PATH.
+
+## Live UX (P1, 2026-11-09)
+- **`src/streaming/liveLifecycle.ts`** (`LiveLifecycle`): states `idle | waiting | playing | reconnecting | ended | offline`, each with an overlay (`.vp-live-overlay`, texts from `live.messages`) and the event `liveStateChange` / `player-live-state-change`.
+  - It is active when `mode: 'live'`, when a `live` config is set, or when hls.js reports `details.live`.
+  - **Waiting:** a manifest/level 404 or `levelEmptyError` before the first frame (or a live playlist with no segments). The player then restarts every `live.offlinePollInterval` (5 s).
+  - **Reconnecting:** the playlist hasn't advanced for ≥ max(8 s, 3 × target duration), or there are network failures after the start. Live network failures never show the error overlay; once the retry budget is used up the player keeps reconnecting in the background.
+  - **Ended:** the playlist has been stuck for ≥ `live.endedTimeout` (20 s) and a 404 was seen; or ENDLIST; or `markStreamEnded()`. Loading stops, there is no Retry button, and `streamEnded` / `player-stream-ended` fire.
+  - **Offline:** the window `offline` event. `online` resumes loading immediately with `hls.startLoad(-1)`.
+- **Go live:**
+  - **Badge threshold:** the badge goes grey when latency is above max(1.5 × target, target + 1), and back to live at or below max(1.25 × target, target + 0.5).
+  - **API:** `goToLive()` is an alias of `seekToLive()`. With native HLS it seeks to `seekable.end − 9 s` (1.5 s in low-latency mode).
+  - **Events:** `liveEdgeChange` / `player-live-edge-change`.
+  - **Resume:** `live.resumeAtLiveEdge` (default true) seeks to live on `play` after a pause longer than 1 s.
+- **Controls in live mode** (`ControlsManager.isLive`, set by `updateLiveState`): ArrowLeft, double-click left, double-tap left, Home and End do nothing. ArrowRight and the right-side double-click/double-tap call `onGoLive`. The quality button is hidden when there are fewer than 2 renditions.
+- **Autoplay:** blocked autoplay on a live stream retries muted and shows the `.vp-unmute-pill` ("Tap to unmute"), then emits `autoplayBlocked` / `player-autoplay-blocked` with `{ mutedFallback }`.
+- **SwarmCloud:** `p2p: { enabled, provider: 'swarmcloud', token, trackerZone, channelId, swarmcloud }`.
+  - It lazy-loads the optional peer `@swarmcloud/hls`, with `window.P2pEngineHls` as the fallback, and creates it after the token refresher is attached and before `onHlsCreated` / `loadSource`.
+  - The default `channelId` is `tokenlessChannelId(url)`, which keeps the host.
+  - Stats come from `getStats` (KB → bytes) and `getPeersInfo`. The engine is destroyed in `teardownEngines`.
+  - The default provider is still p2p-media-loader.
+
+## Live analytics + support tools (P2, 2026-11-09)
+- **`src/services/liveSessionStats.ts`** (`LiveSessionStats`): one instance per source, which tracks:
+  - `watchedSeconds`: frames actually rendered, excluding pauses and stalls;
+  - `joinedAt` / `lastSeenAt`;
+  - rebuffers: a `waiting` while `video.seeking` is a seek, not a rebuffer;
+  - average latency (sampled while playing);
+  - quality switches: the first rendition doesn't count;
+  - token refreshes.
+- **Where the stats go:** `getLiveStats()`; LMS `onProgressSave` gets `isLive`, `watchedSeconds`, `joinedAt` and `lastSeenAt` through `LMSProgressManager.setLiveStats()`; analytics heartbeats and the DOM `player-heartbeat` get `customData.live`.
+  - In live mode LMS skips percentage, milestones and completion.
+  - Analytics payloads replace a non-finite `duration` or `currentTime` with 0.
+- **`components/StatsOverlay.ts`:** `controls.stats` (`true` | `'visible'`). Toggled with the `i` key (only when enabled) or `toggleStats(force?)`. Rendered with text only (no innerHTML) and refreshed once a second while visible.
+- **`services/mediaSession.ts`:** `applyMediaSession` runs on `play` (title and poster; play/pause; seek actions only for VOD), playbackState follows play and pause, and the handlers are cleared on destroy. `mediaSession: false` opts out.
+  - `WakeLockController` is used when `live.wakeLock` is set: it acquires on `playing`, releases on pause, ended and destroy, and re-acquires on `visibilitychange`.
+- **Test-server gotcha:** `signed-live-server.mjs` TS media now loops. Before this fix, scripts that didn't call `/admin/state?s=live` ran off the end of the 600 s of media, and the frozen edge looked exactly like a player stall bug.
+
 ## Rules that protect users of the package
 
 1. **The public API only grows.** Never rename or remove anything exported from `src/index.ts` or `src/react/index.ts`, any `PlayerConfig` key, a public method, a DOM event name, a CSS class consumers may style (`vp-*`, `video-player-container`), or the `<video-player>` tag. Add aliases instead and mark the old name `@deprecated` in JSDoc. Breaking changes need a major version bump plus a migration note in the docs site.

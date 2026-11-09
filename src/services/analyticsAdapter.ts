@@ -304,14 +304,17 @@ export class AnalyticsManager {
   /**
    * Start heartbeat tracking
    */
-  startHeartbeat(getState: () => { currentTime: number; duration: number; volume: number; muted: boolean; playbackRate: number }): void {
+  startHeartbeat(
+    getState: () => { currentTime: number; duration: number; volume: number; muted: boolean; playbackRate: number },
+    getCustomData?: () => Record<string, unknown> | undefined
+  ): void {
     this.stopHeartbeat();
     const interval = this.config.heartbeatInterval ?? 30000;
 
     this.heartbeatTimer = setInterval(() => {
       if (!this.isDestroyed) {
         const state = getState();
-        this.trackEvent('heartbeat', state);
+        this.trackEvent('heartbeat', state, getCustomData?.());
       }
     }, interval);
   }
@@ -350,8 +353,9 @@ export class AnalyticsManager {
       userId: this.config.userId,
       videoId: this.config.videoId,
       sessionId: this.sessionId,
-      currentTime: state.currentTime,
-      duration: state.duration,
+      // JSON has no Infinity: live streams report 0
+      currentTime: Number.isFinite(state.currentTime) ? state.currentTime : 0,
+      duration: Number.isFinite(state.duration) ? state.duration : 0,
       sourceUrl: this.sourceUrl,
       quality: state.quality,
       volume: state.volume,
