@@ -1228,6 +1228,53 @@ export function getBaseStyles(): string {
       background: var(--vp-accent-color, #ef4444);
     }
 
+    /* Stats overlay (controls.stats) */
+    .vp-stats {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 46;
+      min-width: 220px;
+      max-width: calc(100% - 24px);
+      padding: 10px 28px 10px 12px;
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.8);
+      color: #e5e7eb;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .vp-stats[hidden] {
+      display: none;
+    }
+
+    .vp-stats-body {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 2px 12px;
+      margin: 0;
+    }
+
+    .vp-stats-body dt {
+      color: #9ca3af;
+    }
+
+    .vp-stats-body dd {
+      margin: 0;
+      word-break: break-word;
+    }
+
+    .vp-stats-close {
+      position: absolute;
+      top: 4px;
+      right: 6px;
+      border: none;
+      background: none;
+      color: #9ca3af;
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+    }
+
     /* Responsive - Tablet */
     @media (max-width: 768px) {
       .video-player-container {

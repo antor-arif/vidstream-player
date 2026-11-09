@@ -35,6 +35,7 @@ export const defaultControlsConfig: Required<ControlsConfig> = {
   chapters: true,
   seekDuration: 10,
   playlist: true,
+  stats: false,
 };
 
 // ============================================================================
@@ -62,6 +63,8 @@ export interface ControlsCallbacks {
   onSeekBy?: (seconds: number) => void;
   /** LIVE badge clicked — jump to the live edge */
   onGoLive?: () => void;
+  /** `i` key: toggle the statistics overlay (only when controls.stats is enabled) */
+  onToggleStats?: () => void;
 }
 
 export interface ControlsOptions {
@@ -1547,6 +1550,11 @@ export class ControlsManager {
         if (onButton) return;
         e.preventDefault();
         this.callbacks.onTogglePlay();
+        break;
+      case 'i':
+        if (!this.callbacks.onToggleStats) return;
+        e.preventDefault();
+        this.callbacks.onToggleStats();
         break;
       case 'k':
         e.preventDefault();
