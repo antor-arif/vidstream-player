@@ -250,6 +250,26 @@ export type P2PStrategy = 'latency' | 'offload';
  */
 export type P2PProvider = 'p2p-media-loader' | 'swarmcloud';
 
+/**
+ * Why P2P is off for this source (playback continues over HTTP):
+ * - 'not-installed': the provider's package is missing
+ * - 'unsupported': the browser lacks WebRTC / MSE support for P2P
+ * - 'config': the config can't work (SwarmCloud `channelId` without `token`)
+ * - 'rejected': the SwarmCloud tracker refused this viewer (invalid token, domain not allowed, quota)
+ * - 'error': the engine failed to start
+ */
+export type P2PUnavailableReason = 'not-installed' | 'unsupported' | 'config' | 'rejected' | 'error';
+
+/** `p2pUnavailable` payload: emitted at most once per source. Never contains the token. */
+export interface P2PUnavailableEvent {
+  provider: P2PProvider;
+  reason: P2PUnavailableReason;
+  /** Engine error code when there is one (e.g. SwarmCloud 'TRACKER_EXPT', 'P2P_DISABLED') */
+  code?: string;
+  message?: string;
+  sessionId: string;
+}
+
 /** Peer-to-peer segment delivery for HLS (p2p-media-loader or SwarmCloud). */
 export interface P2PConfig {
   /** Default: false */
@@ -258,8 +278,11 @@ export interface P2PConfig {
   provider?: P2PProvider;
   /** SwarmCloud: account token (required for a custom channelId) */
   token?: string;
-  /** SwarmCloud: tracker region, e.g. 'hk' | 'eu' | 'us' | 'cn'. Default: 'hk' (Hong Kong) */
-  trackerZone?: string;
+  /**
+   * SwarmCloud: tracker region: 'hk' | 'eu' | 'us' | 'cn'. Default: 'hk' (Hong Kong; SwarmCloud's own default
+   * is 'eu'). Viewers only find each other on the same tracker, so every viewer of a stream needs the same zone.
+   */
+  trackerZone?: 'hk' | 'eu' | 'us' | 'cn' | (string & NonNullable<unknown>);
   /**
    * SwarmCloud: viewers with the same channel id share segments. Default: host + path with the URL token
    * removed (`/t/{exp}/{nonce}/{sig}` or `/bcdn_token=…`) — the host is KEPT because origin and edges
@@ -856,6 +879,8 @@ export interface PlayerEvents {
   'player-latency': PlayerEventDetail<LatencyEvent>;
   /** About every 2 seconds while P2P is active */
   'player-p2p-stats': PlayerEventDetail<P2PStats>;
+  /** P2P is off for this source (library missing, unsupported, token rejected, ...); playback uses HTTP */
+  'player-p2p-unavailable': PlayerEventDetail<P2PUnavailableEvent>;
   /** A fresh signed URL / token was obtained and applied */
   'player-token-refreshed': PlayerEventDetail<TokenRefreshEvent>;
   /** Getting a fresh signed URL / token failed */

@@ -36,6 +36,7 @@ import type {
   LowLatencyConfig,
   P2PConfig,
   P2PStats,
+  P2PUnavailableEvent,
   LiveConfig,
   TokenRefreshEvent,
   LiveState,
@@ -130,6 +131,8 @@ export interface VideoPlayerProps {
   onLatency?: (latency: LatencyEvent) => void;
   /** About every 2 seconds while P2P is active */
   onP2PStats?: (stats: P2PStats) => void;
+  /** P2P is off for this source (library missing, unsupported, token rejected, ...) */
+  onP2PUnavailable?: (event: P2PUnavailableEvent) => void;
   /** A fresh signed URL / token was applied */
   onTokenRefreshed?: (event: TokenRefreshEvent) => void;
   /** Getting a fresh signed URL / token failed */
@@ -319,6 +322,7 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
         'player-playlist-change': call((p, e) => p.onPlaylistChange?.(e)),
         'player-latency': call((p, e) => p.onLatency?.(e.detail?.data)),
         'player-p2p-stats': call((p, e) => p.onP2PStats?.(e.detail?.data)),
+        'player-p2p-unavailable': call((p, e) => p.onP2PUnavailable?.(e.detail?.data)),
         'player-token-refreshed': call((p, e) => p.onTokenRefreshed?.(e.detail?.data)),
         'player-token-refresh-failed': call((p, e) => p.onTokenRefreshFailed?.(e.detail?.data)),
         'player-live-state-change': call((p, e) => p.onLiveStateChange?.(e.detail?.data)),

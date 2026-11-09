@@ -44,7 +44,7 @@ import { LiveSessionStats } from '../services/liveSessionStats';
 import { applyMediaSession, clearMediaSession, setMediaSessionState, WakeLockController } from '../services/mediaSession';
 import { StatsOverlay, type StatsSnapshot } from './StatsOverlay';
 import type {
-  LatencyEvent, P2PStats, TokenRefreshEvent, LiveState, LiveWatchStats, LiveStateChangeEvent, LiveEdgeChangeEvent, AutoplayBlockedEvent,
+  LatencyEvent, P2PStats, TokenRefreshEvent, LiveState, LiveWatchStats, LiveStateChangeEvent, LiveEdgeChangeEvent, AutoplayBlockedEvent, P2PProvider, P2PUnavailableReason, P2PUnavailableEvent,
 } from '../types';
 
 /** Continuous playback (without stalls/errors) after which the retry budget is refilled */
@@ -248,6 +248,8 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   private unmutePill: HTMLButtonElement | null = null;
   /** SwarmCloud P2pEngineHls instance for the current hls.js instance */
   private swarmEngine: any = null;
+  /** p2pUnavailable already emitted for the current source */
+  private p2pUnavailableReported = false;
   /** Re-measures latency while a live stream is paused (no timeupdate then) */
   private pausedLatencyTimer: ReturnType<typeof setInterval> | null = null;
   /** A go-live seek is in flight: latency readings are stale until it lands */
@@ -1394,6 +1396,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     this.stopHealthyTimer();
     this.authRejections = 0;
     this.startHold = null;
+    this.p2pUnavailableReported = false;
     this.errorRecovery?.resetRetries();
     this.errorRecovery?.stopLiveReconnect();
     // The newest token belongs to the old source; the new one gets its own refresher
@@ -1741,12 +1744,15 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
           return hls;
         } catch (error) {
           console.warn('[VideoPlayer] P2P unavailable, continuing over HTTP:', error);
+          this.reportP2PUnavailable('p2p-media-loader', 'error', error);
         }
-      } else if (this.config.debug) {
-        console.warn('[VideoPlayer] p2p.enabled but p2p-media-loader-hlsjs is not installed — using HTTP only');
+      } else {
+        if (this.config.debug) console.warn('[VideoPlayer] p2p.enabled but p2p-media-loader-hlsjs is not installed — using HTTP only');
+        this.reportP2PUnavailable('p2p-media-loader', 'not-installed');
       }
-    } else if (p2pConfig?.enabled && p2pConfig.provider !== 'swarmcloud' && this.config.debug) {
-      console.warn('[VideoPlayer] p2p.enabled but WebRTC is unavailable — using HTTP only');
+    } else if (p2pConfig?.enabled && p2pConfig.provider !== 'swarmcloud') {
+      if (this.config.debug) console.warn('[VideoPlayer] p2p.enabled but WebRTC is unavailable — using HTTP only');
+      this.reportP2PUnavailable('p2p-media-loader', 'unsupported');
     }
 
     return new Hls(build(false));
@@ -1782,11 +1788,13 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     const p2p = this.config.p2p!;
     if (!P2pEngineHls) {
       if (this.config.debug) console.warn('[VideoPlayer] p2p.provider "swarmcloud" but @swarmcloud/hls is not installed — using HTTP only');
+      this.reportP2PUnavailable('swarmcloud', 'not-installed');
       return;
     }
     try {
       if (typeof P2pEngineHls.isSupported === 'function' && !P2pEngineHls.isSupported()) {
         if (this.config.debug) console.warn('[VideoPlayer] SwarmCloud P2P not supported in this browser — using HTTP only');
+        this.reportP2PUnavailable('swarmcloud', 'unsupported');
         return;
       }
       const pattern = this.config.security?.tokenPrefixPattern;
@@ -1797,6 +1805,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       if (!p2p.token) {
         if (p2p.channelId) {
           console.warn('[VideoPlayer] SwarmCloud: p2p.channelId requires p2p.token — using HTTP only');
+          this.reportP2PUnavailable('swarmcloud', 'config', { message: 'p2p.channelId requires p2p.token' });
           return;
         }
         console.warn('[VideoPlayer] SwarmCloud without p2p.token: using its default channel id (the full URL). ' +
@@ -1817,9 +1826,16 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
         ...(p2p.swarmcloud ?? {}),
       });
       this.swarmEngine = engine;
+      // A tracker refusal (bad token, domain not allowed, quota) arrives as `exception` with
+      // code TRACKER_EXPT and retry false; temporary outages (5xx, network) have retry true
+      engine.on?.('exception', (e: { code?: string; retry?: boolean; message?: string }) => {
+        if (this.swarmEngine !== engine) return;
+        if (e?.code === 'TRACKER_EXPT' && e.retry === false) this.reportP2PUnavailable('swarmcloud', 'rejected', e);
+      });
       this.startP2PStats(null, stats);
     } catch (error) {
       console.warn('[VideoPlayer] SwarmCloud P2P unavailable, continuing over HTTP:', error);
+      this.reportP2PUnavailable('swarmcloud', 'error', error);
     }
   }
 
@@ -1842,6 +1858,25 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     return new Request(url, { headers, signal });
   };
 
+  /** P2P is off for this source: tell the app once (DOM + EventBus). The token never leaves the player. */
+  private reportP2PUnavailable(provider: P2PProvider, reason: P2PUnavailableReason, detail?: unknown): void {
+    if (this.p2pUnavailableReported || this.destroyed) return;
+    this.p2pUnavailableReported = true;
+    const d = (detail ?? {}) as { code?: unknown; message?: unknown };
+    const token = this.config.p2p?.token;
+    let message = typeof d.message === 'string' && d.message ? d.message : undefined;
+    if (message && token) message = message.split(token).join('***');
+    const payload: P2PUnavailableEvent = {
+      provider,
+      reason,
+      ...(typeof d.code === 'string' ? { code: d.code } : {}),
+      ...(message ? { message } : {}),
+      sessionId: this._sessionId,
+    };
+    this.emitEvent('player-p2p-unavailable', payload);
+    this.eventBus.emit('p2pUnavailable', payload);
+  }
+
   private startP2PStats(engine: any, prepared?: P2PStatsTracker): void {
     this.stopP2PStats();
     const tracker = prepared ?? new P2PStatsTracker(this._sessionId);
@@ -1851,6 +1886,10 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     this.p2pStallTimes = [];
     this.p2pStartedAt = Date.now();
     this.p2pTimer = setInterval(() => {
+      // A tracker answer of `rejected` turns SwarmCloud's P2P off silently (no exception event)
+      if (this.swarmEngine?.p2pEnabled === false) {
+        this.reportP2PUnavailable('swarmcloud', 'rejected', { code: 'P2P_DISABLED', message: 'The SwarmCloud tracker disabled P2P for this viewer' });
+      }
       const stats = tracker.snapshot();
       this.emitEvent('player-p2p-stats', stats);
       this.eventBus.emit('p2pStats', stats);

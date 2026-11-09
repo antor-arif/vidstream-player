@@ -39,7 +39,11 @@ const mocks = vi.hoisted(() => {
     static isSupported() { return true; }
     config: any;
     destroyed = false;
+    p2pEnabled = true;
+    listeners: Record<string, Function[]> = {};
     constructor(config: any) { this.config = config; swarm.push(this); }
+    on(event: string, fn: Function) { (this.listeners[event] ??= []).push(fn); return this; }
+    emit(event: string, data: any) { (this.listeners[event] ?? []).forEach(fn => fn(data)); }
     destroy() { this.destroyed = true; }
   }
   return { instances, swarm, FakeHls, FakeSwarm };
@@ -312,10 +316,80 @@ describe('VideoPlayer live UX', () => {
     player.destroy();
 
     // An explicit channelId without a token: refuse rather than half-attach
-    createPlayer({ source: { src: SRC }, mode: 'live', p2p: { enabled: true, provider: 'swarmcloud', channelId: 'x' } });
+    const second = createPlayer({ source: { src: SRC }, mode: 'live', p2p: { enabled: true, provider: 'swarmcloud', channelId: 'x' } });
+    const unavailable: any[] = [];
+    second.player.on('p2pUnavailable', (e: any) => unavailable.push(e));
     await nextHls(1);
     await flush(30);
     expect(mocks.swarm).toHaveLength(1);
+    expect(unavailable).toEqual([expect.objectContaining({ provider: 'swarmcloud', reason: 'config' })]);
+    second.player.destroy();
     warn.mockRestore();
+  });
+});
+
+describe('p2pUnavailable', () => {
+  const TOKEN = 'secretTok123';
+
+  it('SwarmCloud tracker rejection (exception TRACKER_EXPT, retry false): once, token redacted', async () => {
+    const { player, container } = createPlayer({ source: { src: SRC }, mode: 'live', p2p: { enabled: true, provider: 'swarmcloud', token: TOKEN } });
+    const bus: any[] = [];
+    const dom: any[] = [];
+    player.on('p2pUnavailable', (e: any) => bus.push(e));
+    container.addEventListener('player-p2p-unavailable', (e: any) => dom.push(e.detail?.data));
+    await nextHls(0);
+    await flush(30);
+    const engine = mocks.swarm[0];
+
+    // Temporary tracker outage: SwarmCloud retries, P2P is not off
+    engine.emit('exception', Object.assign(new Error('server response code is 503'), { code: 'TRACKER_EXPT', retry: true }));
+    engine.emit('exception', Object.assign(new Error('signal err'), { code: 'SIGNAL_EXPT' }));
+    expect(bus).toEqual([]);
+
+    engine.emit('exception', Object.assign(new Error(`token ${TOKEN} is invalid`), { code: 'TRACKER_EXPT', retry: false }));
+    engine.emit('exception', Object.assign(new Error('again'), { code: 'TRACKER_EXPT', retry: false }));
+    expect(bus).toHaveLength(1);
+    expect(bus[0]).toMatchObject({ provider: 'swarmcloud', reason: 'rejected', code: 'TRACKER_EXPT', message: 'token *** is invalid' });
+    expect(JSON.stringify(bus[0])).not.toContain(TOKEN);
+    expect(dom).toEqual(bus);
+    player.destroy();
+  });
+
+  it('SwarmCloud silent rejection (engine.p2pEnabled turned false) is reported by the stats poll', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const { player } = createPlayer({ source: { src: SRC }, mode: 'live', p2p: { enabled: true, provider: 'swarmcloud', token: TOKEN } });
+    const bus: any[] = [];
+    player.on('p2pUnavailable', (e: any) => bus.push(e));
+    await nextHls(0);
+    await flush(30);
+    vi.advanceTimersByTime(2100);
+    expect(bus).toEqual([]);
+    mocks.swarm[0].p2pEnabled = false;
+    vi.advanceTimersByTime(4100);
+    expect(bus).toEqual([expect.objectContaining({ provider: 'swarmcloud', reason: 'rejected', code: 'P2P_DISABLED' })]);
+    player.destroy();
+  });
+
+  it('p2p-media-loader without WebRTC: reason unsupported', async () => {
+    const { player } = createPlayer({ source: { src: SRC }, mode: 'live', p2p: { enabled: true } });
+    const bus: any[] = [];
+    player.on('p2pUnavailable', (e: any) => bus.push(e));
+    await nextHls(0);
+    expect(bus).toEqual([expect.objectContaining({ provider: 'p2p-media-loader', reason: 'unsupported' })]);
+    player.destroy();
+  });
+
+  it('nothing is emitted without p2p, or when SwarmCloud attaches fine', async () => {
+    for (const p2p of [undefined, { enabled: true, provider: 'swarmcloud', token: TOKEN }]) {
+      document.body.innerHTML = '';
+      mocks.instances.length = 0;
+      const { player } = createPlayer({ source: { src: SRC }, mode: 'live', p2p: p2p as any });
+      const bus: any[] = [];
+      player.on('p2pUnavailable', (e: any) => bus.push(e));
+      await nextHls(0);
+      await flush(30);
+      expect(bus).toEqual([]);
+      player.destroy();
+    }
   });
 });

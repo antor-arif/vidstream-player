@@ -605,10 +605,35 @@ p2p: {
   enabled: true,
   provider: 'swarmcloud',
   token: 'YOUR_SWARMCLOUD_TOKEN',   // required for the custom channel id below
-  // trackerZone: 'hk',              // tracker region; default 'hk' (Hong Kong)
+  // trackerZone: 'hk',              // tracker region, see below; default 'hk' (Hong Kong)
   // channelId: url => …,           // default: host + path with the URL token removed (host kept on purpose)
   // swarmcloud: { …raw P2pEngineHls options }
 }
+```
+
+**`trackerZone`: which SwarmCloud tracker viewers connect to.** The tracker introduces viewers of the same channel to each other, so:
+- **One zone per class:** viewers only share segments with peers on the same tracker. Every viewer of a stream must use the same zone; don't pick it per viewer.
+- **Pick the region nearest most of your viewers:** connecting is faster and the tracker sees all of them.
+- **Default:** the player uses `'hk'` (Hong Kong) for South and East Asian audiences. SwarmCloud's own default is `'eu'`.
+
+| `trackerZone` | Tracker region |
+|---|---|
+| `'hk'` (player default) | Hong Kong |
+| `'eu'` | Europe (SwarmCloud's default) |
+| `'us'` | United States |
+| `'cn'` | Mainland China |
+
+**When P2P is off.** Playback never depends on P2P: anything that disables it falls back to HTTP. The player tells your app once per source with `p2pUnavailable { provider, reason, code?, message? }`:
+- `reason: 'rejected'`: the SwarmCloud tracker refused this viewer (invalid token, domain not allowed, quota). `code` is `TRACKER_EXPT`, or `P2P_DISABLED` when SwarmCloud switched itself off without an error.
+- `reason: 'not-installed'`: the provider's package is missing.
+- `reason: 'unsupported'`: the browser can't do P2P.
+- `reason: 'config'`: `channelId` was set without `token`.
+- `reason: 'error'`: the engine failed to start.
+
+The token never appears in the payload. Temporary tracker outages (5xx, network) are retried by SwarmCloud and are not reported.
+
+```ts
+player.on('p2pUnavailable', ({ reason, code }) => log('p2p off', reason, code));
 ```
 
 The engine is created after the token refresher, so it always fetches segments with a valid token. Stats arrive as `p2pStats`. Without a `token`, SwarmCloud falls back to its own channel id (the full URL), so viewers with different signed URLs won't share; the player logs a warning. `p2p-media-loader` (above) remains the default provider.
@@ -674,7 +699,7 @@ realtime.subscribe(`class:${classId}`, (msg) => {
 });
 ```
 
-React: the same options are props (`live`, `hlsConfig`, `p2p`, `security`, `mediaSession`, `onHlsCreated`), the events are `onTokenRefreshed`, `onTokenRefreshFailed`, `onLiveStateChange`, `onLiveEdgeChange`, `onStreamEnded`, `onAutoplayBlocked` and `onP2PStats`, and the ref adds `goToLive()`, `markStreamEnded()`, `getLiveState()`, `getLiveStats()`, `getHls()`, `getDash()` and `toggleStats()`. Web component: the same methods on the element, plus a `latency-mode="standard|low"` attribute.
+React: the same options are props (`live`, `hlsConfig`, `p2p`, `security`, `mediaSession`, `onHlsCreated`), the events are `onTokenRefreshed`, `onTokenRefreshFailed`, `onLiveStateChange`, `onLiveEdgeChange`, `onStreamEnded`, `onAutoplayBlocked`, `onP2PStats` and `onP2PUnavailable`, and the ref adds `goToLive()`, `markStreamEnded()`, `getLiveState()`, `getLiveStats()`, `getHls()`, `getDash()` and `toggleStats()`. Web component: the same methods on the element, plus a `latency-mode="standard|low"` attribute.
 
 ### Low latency (3–5 s)
 
@@ -805,6 +830,7 @@ player.once('ended', handler); // fire once then remove
 | `autoplayBlocked` | `{ mutedFallback, sessionId }` |
 | `tokenRefreshed` / `tokenRefreshFailed` | `{ reason, host?, error?, sessionId }` |
 | `p2pStats` | `{ httpBytes, p2pBytes, uploadedBytes, peers, p2pRatio, safeMode, sessionId }` |
+| `p2pUnavailable` | `{ provider, reason, code?, message?, sessionId }`: P2P is off for this source (once per source) |
 | `hlsCreated` | `{ hls, Hls, sessionId }` |
 
 ---
@@ -1004,6 +1030,7 @@ player.destroy()
 | `player-live-edge-change` | Fell behind / back at the live edge |
 | `player-stream-ended` | Live stream ended |
 | `player-autoplay-blocked` | Browser blocked autoplay |
+| `player-p2p-unavailable` | P2P is off for this source (library missing, unsupported, token rejected, …) |
 | `player-token-refreshed` / `player-token-refresh-failed` | Signed URL refreshed / refresh failed |
 | `player-hls-created` | hls.js instance created |
 | `player-pip` | PiP entered or exited |
