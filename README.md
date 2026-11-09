@@ -449,10 +449,14 @@ This is the same mechanism used internally for the mini player. Because it uses 
 {
   errorRecovery: {
     maxRetries: 5,
-    retryDelay: 2000,  // ms (doubles each attempt)
+    retryDelay: 2000,     // ms (doubles each attempt)
+    maxRetryDelay: 30000, // backoff cap
+    liveMaxRetries: 10,   // live streams; unlimited while the browser is offline
   },
 }
 ```
+
+The retry budget refills after 10 s of uninterrupted playback, so a long live class survives any number of separate network blips.
 
 ---
 
@@ -510,6 +514,158 @@ const saved = loadProgressFromStorage('course-101-lesson-1');
 ```
 
 In `live` mode the seek bar and duration are hidden, a **LIVE** badge is shown, speed selector and chapter controls are disabled. When playback falls behind the live edge the badge turns grey — click it (or call `player.seekToLive()`) to jump back.
+
+### Live classes in production (signed URLs, lifecycle, P2P)
+
+#### Latency presets: `live.latencyMode`
+
+`live.latencyMode` takes priority over `lowLatency`, which in turn overrides the player's defaults.
+
+| `latencyMode` | Use with | hls.js settings | Measured latency |
+|---|---|---|---|
+| `'standard'` | HLS (TS), e.g. 3 s segments | `lowLatencyMode: false`, `liveSyncDurationCount: 3`, `liveMaxLatencyDurationCount: 10` | ~9 s |
+| `'low'` | LL-HLS (`EXT-X-PART`) | `lowLatencyMode: true`, `maxLiveSyncPlaybackRate: 1.1`, **no `liveSync*`** (follows `PART-HOLD-BACK`) | ~1.5 s with 0.5 s parts |
+
+Never combine `'low'` with `liveSyncDuration*` (via `hlsConfig`): it overrides part-hold-back targeting (measured 9.5 s instead of 1.5 s). Live streams also default to `backBufferLength: 30`, so memory stays flat on low-end phones during multi-hour classes.
+
+Need any other hls.js setting? Pass `hlsConfig` (merged last; a custom `xhrSetup` still runs). Use `onHlsCreated(hls, Hls)` to reach the instance before it loads, or call `player.getHls()` / `player.getDash()` afterwards.
+
+#### Signed, IP-bound URLs (token in the path)
+
+URLs such as `https://EDGE/t/{exp}/{nonce}/{sig}/{app}/{stream}/{file}` or Bunny's `https://ZONE/bcdn_token=…/{app}/{stream}/{file}` expire, and they stop working when the viewer's IP changes (Wi-Fi → 4G). The server then answers **403**. Give the player a way to get a fresh URL:
+
+```ts
+{
+  security: {
+    // A full fresh URL for the SAME stream on the SAME host (same edge / same Bunny zone):
+    // hosts number segments differently.
+    refreshPlaybackUrl: async () => (await api.get(`/classes/${id}/playback-url`)).url,
+    // tokenPrefixPattern: /^(\/auth\/[^/]+)(\/.*)$/,   // other CDNs: group 1 = token, group 2 = rest of path
+  },
+}
+```
+
+- **No reload:** the player swaps only the token part of every URL in place, so the ~9 s HLS buffer keeps playing. It covers future requests, segment URLs hls.js has already parsed (P2P loaders fetch these themselves) and pending retries.
+- **Retries:** 403s, status 0 and timeouts are retried with backoff, which rides out a network switch.
+- **Refresh limits:** a 403 burst triggers a single refresh, and there are at most 4 refreshes per minute.
+- **Last resort:** reload with a fresh URL.
+- **Your app's state is untouched:** `config.source.src` never changes, so React never reloads the stream.
+- **Native HLS:** old iOS without MSE re-sets `video.src` (a short interruption).
+- **Old API still works:** `refreshPlaybackToken` returning a full `https://` URL does the same. Returning a bare token still means "new auth header", as before.
+- **Events:** `tokenRefreshed` / `tokenRefreshFailed`. Tokens never appear in events or debug logs.
+
+Without a refresher, an expired URL ends in a clear `AUTH_ERROR` overlay. There is no retry loop.
+
+#### Stream lifecycle
+
+With `mode: 'live'` (or any `live` config), viewers see the stream's state instead of a generic error:
+
+| State | When | Overlay |
+|---|---|---|
+| `waiting` | Manifest 404 or an empty playlist before the first frame | "Live class hasn't started yet" (polls every `live.offlinePollInterval`, default 5 s, and starts automatically) |
+| `reconnecting` | Playlist stopped advancing, or network errors after the start | Spinner + "Reconnecting…" (retries indefinitely; no error screen) |
+| `ended` | Playlist stuck for `live.endedTimeout` (20 s) **and** 404s, `#EXT-X-ENDLIST`, or `player.markStreamEnded()` | "Live class has ended" (no Retry; loading stops) |
+| `offline` | Browser `offline` event | "No internet connection" (resumes at once on `online`) |
+
+```ts
+player.on('liveStateChange', ({ state, previous }) => {});
+player.on('streamEnded', () => {});
+player.markStreamEnded();      // e.g. when your backend pushes its `stream.ended` webhook
+player.getLiveState();         // 'idle' | 'waiting' | 'playing' | 'reconnecting' | 'ended' | 'offline'
+```
+
+Translate the texts with `live.messages: { waiting, reconnecting, ended, offline, tapToUnmute, goLive }`. Set `live.overlays: false` to draw your own UI from `liveStateChange`.
+
+#### Go live, seeking and autoplay
+
+- **LIVE badge:** it turns grey and clickable when playback is more than ~1.5 × the target latency behind (also while paused). Click it, or call `player.goToLive()`, to jump back. Each change emits `liveEdgeChange { atLiveEdge, latencySec }`.
+- **Resume after a pause:** playback rejoins the live edge (`live.resumeAtLiveEdge`, default `true`).
+- **No seeking inside the live window:** `←`, `Home`/`End`, and double-click or double-tap on the left do nothing. `→` and the right-side double-click or double-tap jump to live.
+- **Autoplay:** if the browser blocks it, a live stream starts muted with a "Tap to unmute" pill and emits `autoplayBlocked { mutedFallback }`.
+- **Quality menu:** hidden when the stream has a single rendition.
+- **Live detection:** a stream loaded without `mode: 'live'` is detected from the playlist, and the live restrictions apply anyway.
+
+#### SwarmCloud P2P
+
+```bash
+npm install @swarmcloud/hls
+```
+
+```ts
+p2p: {
+  enabled: true,
+  provider: 'swarmcloud',
+  token: 'YOUR_SWARMCLOUD_TOKEN',   // required for the custom channel id below
+  // trackerZone: 'eu',
+  // channelId: url => …,           // default: host + path with the URL token removed (host kept on purpose)
+  // swarmcloud: { …raw P2pEngineHls options }
+}
+```
+
+The engine is created after the token refresher, so it always fetches segments with a valid token. Stats arrive as `p2pStats`. Without a `token`, SwarmCloud falls back to its own channel id (the full URL), so viewers with different signed URLs won't share; the player logs a warning. `p2p-media-loader` (above) remains the default provider.
+
+#### Watch time instead of percentages
+
+A live class has no fixed duration, so in live mode:
+- **LMS:** `lmsProgress.onProgressSave` receives `isLive: true`, `watchedSeconds` (time actually played), `joinedAt` and `lastSeenAt`. Milestones and completion don't fire.
+- **Analytics:** heartbeats carry `customData.live` (`watchedSeconds`, `rebufferCount`, `rebufferSeconds`, `averageLatency`, `qualitySwitches`, `tokenRefreshes`, `latency`, `liveState`).
+- **API:** `player.getLiveStats()` returns the same numbers.
+- **No `Infinity`:** payloads never contain it (live `duration` is reported as `0`).
+
+#### Support tools
+
+- `controls: { stats: true }` adds a statistics overlay, toggled with the `i` key or `player.toggleStats()`. It shows latency, buffer, resolution, bitrate, dropped frames and P2P share. `'visible'` shows it from the start.
+- **OS media controls** (lock screen, notification) show the title and poster with play/pause, and offer no seek actions for live. Turn them off with `mediaSession: false`.
+- `live.wakeLock: true` keeps the screen on during live playback.
+
+#### Complete example: an Instructly live class
+
+```ts
+import { createVideoPlayer } from 'vidstream-player';
+import 'vidstream-player/styles';
+
+// Your backend signs for the viewer's IP (Media Engine tools/sign-url.js or Bunny's signer)
+const fetchUrl = async (host?: string) =>
+  (await api.get(`/classes/${classId}/playback-url`, { params: { host } })).url as string;
+
+const firstUrl = await fetchUrl();
+const host = new URL(firstUrl).host;
+
+const player = createVideoPlayer('#player', {
+  mode: 'live',
+  autoplay: true,
+  source: { src: firstUrl, type: 'hls', title: 'Physics 101 · Live', poster: '/img/class.jpg' },
+
+  live: {
+    latencyMode: 'standard',          // HLS ts:master.m3u8 (~10 s). For LL-HLS master.m3u8 use 'low' (~1.5 s)
+    endedTimeout: 20000,
+    wakeLock: true,
+    messages: { waiting: 'Class starts soon…' },
+  },
+
+  security: {
+    // Same host as the current URL — the edge numbers segments differently from the origin
+    refreshPlaybackUrl: () => fetchUrl(host),
+  },
+
+  p2p: { enabled: true, provider: 'swarmcloud', token: SWARMCLOUD_TOKEN },
+
+  lmsProgress: {
+    enabled: true,
+    videoId: classId,
+    userId,
+    onProgressSave: ({ watchedSeconds, joinedAt, lastSeenAt }) =>
+      api.post(`/classes/${classId}/attendance`, { watchedSeconds, joinedAt, lastSeenAt }),
+  },
+});
+
+player.on('streamEnded', () => showFeedbackForm());
+realtime.subscribe(`class:${classId}`, (msg) => {
+  if (msg.type === 'stream.ended') player.markStreamEnded();
+});
+```
+
+React: the same options are props (`live`, `hlsConfig`, `p2p`, `security`, `mediaSession`, `onHlsCreated`), the events are `onTokenRefreshed`, `onTokenRefreshFailed`, `onLiveStateChange`, `onLiveEdgeChange`, `onStreamEnded`, `onAutoplayBlocked` and `onP2PStats`, and the ref adds `goToLive()`, `markStreamEnded()`, `getLiveState()`, `getLiveStats()`, `getHls()`, `getDash()` and `toggleStats()`. Web component: the same methods on the element, plus a `latency-mode="standard|low"` attribute.
 
 ### Low latency (3–5 s)
 
@@ -633,6 +789,14 @@ player.once('ended', handler); // fire once then remove
 | `playlistChange` | `{ index, item, sessionId }` |
 | `buffering` | `{ currentTime, duration, sessionId }` |
 | `error` | `{ code, message }` |
+| `latency` | `{ latency, targetLatency, atLiveEdge, playbackRate, sessionId }` (live, ~1/s) |
+| `liveEdgeChange` | `{ atLiveEdge, latencySec, sessionId }` |
+| `liveStateChange` | `{ state, previous, sessionId }` |
+| `streamEnded` | `{ src, sessionId }` |
+| `autoplayBlocked` | `{ mutedFallback, sessionId }` |
+| `tokenRefreshed` / `tokenRefreshFailed` | `{ reason, host?, error?, sessionId }` |
+| `p2pStats` | `{ httpBytes, p2pBytes, uploadedBytes, peers, p2pRatio, safeMode, sessionId }` |
+| `hlsCreated` | `{ hls, Hls, sessionId }` |
 
 ---
 
@@ -723,6 +887,12 @@ import type {
   ChapterChangeEvent,
   PlaylistChangeEvent,
   PluginsConfig,
+  LiveConfig,
+  LiveLatencyMode,
+  LiveState,
+  LiveWatchStats,
+  TokenRefreshEvent,
+  P2PConfig,
 } from 'vidstream-player';
 ```
 
@@ -754,6 +924,17 @@ player.getDuration()
 player.getVolume()
 player.isPaused()
 player.getQuality()
+
+// Live
+player.goToLive()               // alias: seekToLive()
+player.markStreamEnded()
+player.getLiveState()
+player.getLiveLatency()
+player.getLiveStats()
+player.getP2PStats()
+player.toggleStats(force?)
+player.getHls()                 // hls.js instance or null
+player.getDash()
 
 // Config
 player.updateConfig(Partial<PlayerConfig>)
@@ -810,6 +991,12 @@ player.destroy()
 | `player-chapter-change` | Chapter boundary crossed |
 | `player-playlist-change` | Playlist item changed |
 | `player-error` | Playback error |
+| `player-live-state-change` | Live lifecycle state changed |
+| `player-live-edge-change` | Fell behind / back at the live edge |
+| `player-stream-ended` | Live stream ended |
+| `player-autoplay-blocked` | Browser blocked autoplay |
+| `player-token-refreshed` / `player-token-refresh-failed` | Signed URL refreshed / refresh failed |
+| `player-hls-created` | hls.js instance created |
 | `player-pip` | PiP entered or exited |
 | `player-buffering` | Buffering state changed |
 
