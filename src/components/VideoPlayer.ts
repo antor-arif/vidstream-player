@@ -37,12 +37,17 @@ import { PlaylistManager, playlistStyles } from './PlaylistManager';
 import { parseChaptersVtt } from '../utils/vtt';
 import { isDomainAllowed } from '../utils/security';
 import { buildHlsConfig, buildP2PCoreConfig, isP2PSupported, resolveLowLatency, LIVE_BACK_BUFFER_SECONDS } from '../streaming/hlsConfig';
-import { loadP2PEngine, P2PStatsTracker } from '../streaming/p2p';
-import { TokenRefresher, redactUrl } from '../streaming/tokenRefresh';
-import type { LatencyEvent, P2PStats, TokenRefreshEvent } from '../types';
+import { loadP2PEngine, loadSwarmCloudEngine, P2PStatsTracker } from '../streaming/p2p';
+import { TokenRefresher, redactUrl, tokenlessChannelId } from '../streaming/tokenRefresh';
+import { LiveLifecycle, DEFAULT_LIVE_MESSAGES } from '../streaming/liveLifecycle';
+import type {
+  LatencyEvent, P2PStats, TokenRefreshEvent, LiveState, LiveStateChangeEvent, LiveEdgeChangeEvent, AutoplayBlockedEvent,
+} from '../types';
 
 /** Continuous playback (without stalls/errors) after which the retry budget is refilled */
 const HEALTHY_PLAYBACK_MS = 10000;
+
+type P2PConfigChannelId = string | ((m3u8Url: string) => string);
 
 /** Retry policies without token refresh (status 0 / timeouts retried, 401/403 not) */
 const NO_REFRESH = new TokenRefresher({ getFreshUrl: async () => null, maxRefreshesPerMinute: 0 });
@@ -232,6 +237,17 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   private nativeRefreshInFlight = false;
   private healthyTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Live lifecycle + UX
+  private liveLifecycle: LiveLifecycle | null = null;
+  private pausedAt = 0;
+  private unmutePill: HTMLButtonElement | null = null;
+  /** SwarmCloud P2pEngineHls instance for the current hls.js instance */
+  private swarmEngine: any = null;
+  /** Re-measures latency while a live stream is paused (no timeupdate then) */
+  private pausedLatencyTimer: ReturnType<typeof setInterval> | null = null;
+  /** A go-live seek is in flight: latency readings are stale until it lands */
+  private liveSeekPending = false;
+
   constructor(container: HTMLElement | string, config: PlayerConfig) {
     if (typeof container === 'string') {
       const el = document.querySelector(container);
@@ -284,6 +300,21 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     this.errorRecovery = new ErrorRecoveryManager(this.config.errorRecovery);
     this.errorRecovery.setLive(this.config.mode === 'live');
     this.authToken = this.config.security?.authToken;
+    this.liveLifecycle = new LiveLifecycle(this.container, {
+      restart: () => this.restartPlayback(),
+      resumeLoading: () => this.resumeLiveLoading(),
+      stopLoading: () => this.stopLiveLoading(),
+      onStateChange: (state, previous) => {
+        const payload: LiveStateChangeEvent = { state, previous, sessionId: this._sessionId };
+        this.emitEvent('player-live-state-change', payload);
+        this.eventBus.emit('liveStateChange', payload);
+      },
+      onEnded: () => {
+        this.emitEvent('player-stream-ended', {});
+        this.eventBus.emit('streamEnded', { src: this.currentSrc(), sessionId: this._sessionId });
+        this.reportError('STREAM_ENDED', 'The live stream has ended', false);
+      },
+    }, () => this.config.live, this.listeners.signal);
     this.initialChapters = normalizeChapters(this.config.chapters ?? []);
     this.bindContainerEvents();
 
@@ -604,11 +635,18 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       // `canplay` fires again after every seek/rebuffer — autoplay only once per loaded source
       if (this.autoplayPending) {
         this.autoplayPending = false;
-        this.play().catch(() => {});
+        void this.attemptAutoplay();
       }
     }, opts);
 
     video.addEventListener('play', () => {
+      // Live: after a pause, rejoin at the live edge instead of continuing from the old position
+      this.stopPausedLatencyTimer();
+      const pausedFor = this.pausedAt ? Date.now() - this.pausedAt : 0;
+      this.pausedAt = 0;
+      if (pausedFor > 1000 && this.isLiveStream() && this.config.live?.resumeAtLiveEdge !== false) {
+        this.seekToLive();
+      }
       this.autoplayPending = false;
       this.state.playing = true;
       this.state.paused = false;
@@ -627,6 +665,11 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
 
     video.addEventListener('pause', () => {
       this.stopHealthyTimer();
+      if (!video.ended) this.pausedAt = Date.now();
+      if (this.isLiveStream()) {
+        this.stopPausedLatencyTimer();
+        this.pausedLatencyTimer = setInterval(() => this.trackLatency(), 1000);
+      }
       this.state.playing = false;
       this.state.paused = true;
       this.container.classList.remove('vp-playing');
@@ -652,7 +695,8 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       this.lmsProgressManager?.handleCompletion();
 
       if (this.isLiveStream()) {
-        this.reportError('STREAM_ENDED', 'The live stream has ended', false);
+        if (this.liveLifecycle?.isActive()) this.liveLifecycle.markEnded();
+        else this.reportError('STREAM_ENDED', 'The live stream has ended', false);
       }
 
       // Auto-advance playlist
@@ -684,6 +728,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
 
     video.addEventListener('volumechange', () => {
       const muteChanged = this.state.muted !== video.muted;
+      if (!video.muted) this.removeUnmutePill();
       this.state.volume = video.volume;
       this.state.muted = video.muted;
       this.updateState();
@@ -705,6 +750,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     }, opts);
 
     video.addEventListener('seeked', () => {
+      this.liveSeekPending = false;
       const from = this.seekFromTime;
       const to = video.currentTime;
       this.state.currentTime = to;
@@ -736,6 +782,11 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       // Refill the retry budget only after sustained healthy playback: a stream that plays for a second
       // and fails again must not retry forever, but a 2-hour class must survive more than 3 blips
       this.startHealthyTimer();
+      if (this.liveLifecycle?.isActive()) {
+        this.errorRecovery?.stopLiveReconnect();
+        this.hideErrorUI();
+        this.liveLifecycle.playing();
+      }
     }, opts);
 
     // Native HLS (Safari/iOS): a stall may be an expired / IP-bound URL that the browser won't report
@@ -935,10 +986,30 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     originalError?: unknown
   ): void {
     const recovery = this.errorRecovery;
+    const lifecycle = this.liveLifecycle;
     this.stopHealthyTimer();
+    if (lifecycle?.isEnded()) return;
+
+    const liveReconnect = !!retry && !!lifecycle?.isActive() && lifecycle.hasStarted() &&
+      (code === 'NETWORK_ERROR' || code === 'AUTH_ERROR');
+    if (liveReconnect) lifecycle!.networkFailure();
+
     if (retry && recovery?.canRetry()) {
       this.reportError(code, message, false, originalError);
       recovery.scheduleRetry(retry);
+      return;
+    }
+
+    // Live viewers never get stuck on an error screen for network trouble: keep reconnecting
+    if (liveReconnect && recovery?.isEnabled()) {
+      this.reportError(code, message, false, originalError);
+      recovery.startLiveReconnect(
+        () => typeof navigator === 'undefined' || navigator.onLine !== false,
+        () => {
+          recovery.resetRetries();
+          this.restartPlayback();
+        }
+      );
       return;
     }
 
@@ -1088,6 +1159,65 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     } finally {
       this.nativeRefreshInFlight = false;
     }
+  }
+
+  /**
+   * Autoplay for a freshly loaded source. Live streams fall back to muted playback when the browser
+   * blocks sound ("Tap to unmute" pill); the poster with the big play button stays otherwise.
+   */
+  private async attemptAutoplay(): Promise<void> {
+    const video = this.videoElement;
+    if (!video) return;
+    const token = this.loadToken;
+    try {
+      await video.play();
+      return;
+    } catch (error) {
+      if (this.isStale(token) || (error as DOMException)?.name !== 'NotAllowedError') return;
+    }
+    const blocked = (mutedFallback: boolean) => {
+      const payload: AutoplayBlockedEvent = { mutedFallback, sessionId: this._sessionId };
+      this.emitEvent('player-autoplay-blocked', payload);
+      this.eventBus.emit('autoplayBlocked', payload);
+    };
+    if (!this.isLiveStream() || video.muted) {
+      blocked(false);
+      return;
+    }
+    video.muted = true;
+    try {
+      await video.play();
+      if (this.isStale(token)) return;
+      this.showUnmutePill();
+      blocked(true);
+    } catch {
+      if (this.isStale(token)) return;
+      video.muted = false;
+      blocked(false);
+    }
+  }
+
+  private showUnmutePill(): void {
+    this.removeUnmutePill();
+    const pill = document.createElement('button');
+    pill.type = 'button';
+    pill.className = 'vp-unmute-pill';
+    pill.textContent = this.config.live?.messages?.tapToUnmute ?? DEFAULT_LIVE_MESSAGES.tapToUnmute;
+    pill.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this.videoElement) {
+        this.videoElement.muted = false;
+        if (this.videoElement.volume === 0) this.videoElement.volume = 1;
+      }
+      this.removeUnmutePill();
+    });
+    this.container.appendChild(pill);
+    this.unmutePill = pill;
+  }
+
+  private removeUnmutePill(): void {
+    this.unmutePill?.remove();
+    this.unmutePill = null;
   }
 
   private showErrorUI(message: string, allowRetry: boolean): void {
@@ -1242,6 +1372,10 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     this.state.ended = false;
     this.state.isLive = false;
     this.errorRecovery?.setLive(this.config.mode === 'live');
+    this.liveLifecycle?.reset();
+    this.liveLifecycle?.setActive(this.expectsLive());
+    this.removeUnmutePill();
+    this.pausedAt = 0;
     this.updateState();
 
     // Reset quality state — the new source has its own renditions
@@ -1268,7 +1402,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
 
   /** Re-create the streaming engine for the current source, resuming from the current position. */
   private restartPlayback(): void {
-    if (!this.videoElement || this.destroyed) return;
+    if (!this.videoElement || this.destroyed || this.liveLifecycle?.isEnded()) return;
     const resumeAt = this.state.currentTime;
     const wasPlaying = this.state.playing || this.autoplayPending;
 
@@ -1319,6 +1453,14 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   }
 
   private teardownEngines(): void {
+    this.stopPausedLatencyTimer();
+    this.liveSeekPending = false;
+    if (this.swarmEngine) {
+      try {
+        this.swarmEngine.destroy();
+      } catch (e) { console.error('[VideoPlayer] Error destroying SwarmCloud engine:', e); }
+      this.swarmEngine = null;
+    }
     this.stopP2PStats();
     this.tokenRefresher?.detach();
     this.nativeHlsSrc = null;
@@ -1353,12 +1495,48 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     if (this.state.isLive === live) return;
     this.state.isLive = live;
     this.errorRecovery?.setLive(live || this.config.mode === 'live');
+    this.liveLifecycle?.setActive(live || this.expectsLive());
     this.controlsManager?.updateLiveState(live || this.config.mode === 'live');
     this.updateState();
   }
 
   private isLiveStream(): boolean {
     return this.config.mode === 'live' || this.state.isLive;
+  }
+
+  /** Configured as live before the engine could tell (mode 'live' or a `live` config) */
+  private expectsLive(): boolean {
+    return this.config.mode === 'live' || !!this.config.live;
+  }
+
+  /** Network came back: resume loading now instead of waiting for the next backoff step */
+  private resumeLiveLoading(): void {
+    if (this.destroyed || this.liveLifecycle?.isEnded()) return;
+    this.errorRecovery?.resetRetries();
+    this.errorRecovery?.stopLiveReconnect();
+    this.hideErrorUI();
+    const hls = this.hls;
+    if (hls && hls.levels?.length) {
+      try {
+        hls.startLoad(-1);
+        return;
+      } catch {
+        // fall through to a full restart
+      }
+    }
+    this.restartPlayback();
+  }
+
+  /** The live stream ended: stop every request and retry */
+  private stopLiveLoading(): void {
+    this.errorRecovery?.resetRetries();
+    this.errorRecovery?.stopLiveReconnect();
+    this.hideErrorUI();
+    try {
+      this.hls?.stopLoad();
+    } catch {
+      // already destroyed
+    }
   }
 
   private async loadHLSSource(src: string, token: number): Promise<void> {
@@ -1372,6 +1550,11 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       this.hls = hls;
       this.tokenRefresher?.setUrl(src);
       this.tokenRefresher?.attach(hls, Hls);
+      if (this.usesSwarmCloud()) {
+        const SwarmCloud = await loadSwarmCloudEngine();
+        if (this.isStale(token) || this.hls !== hls) return;
+        this.attachSwarmCloud(hls, SwarmCloud);
+      }
 
       // Before loadSource/attachMedia, so integrations (e.g. a P2P engine) can hook in
       try {
@@ -1402,9 +1585,13 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       // hls.js keeps a finite duration for live streams, so take "live" from the playlist itself
       hls.on(Hls.Events.LEVEL_LOADED, (_: unknown, data: any) => {
         if (this.hls !== hls) return;
-        if (typeof data?.details?.live === 'boolean') {
-          this.markLive(data.details.live);
-          if (data.details.live) this.applyLiveBufferDefaults(hls);
+        const details = data?.details;
+        if (typeof details?.live === 'boolean') {
+          this.markLive(details.live);
+          if (details.live) this.applyLiveBufferDefaults(hls);
+          this.liveLifecycle?.playlistUpdate(details.endSN, details.live, details.targetduration);
+          // A live playlist with no segments yet: the class hasn't started
+          if (details.live && !details.fragments?.length) this.liveLifecycle?.streamUnavailable();
         }
       });
 
@@ -1449,7 +1636,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   private async createHls(Hls: any, token: number): Promise<any | null> {
     const p2pConfig = this.config.p2p;
     const strategy = p2pConfig?.strategy ?? 'latency';
-    const wantsP2P = !!p2pConfig?.enabled && isP2PSupported();
+    const wantsP2P = !!p2pConfig?.enabled && p2pConfig.provider !== 'swarmcloud' && isP2PSupported();
     const lowLatency = resolveLowLatency(this.config.lowLatency, wantsP2P ? strategy : undefined);
 
     // Auth header first, then any xhrSetup from config.hlsConfig
@@ -1506,7 +1693,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       } else if (this.config.debug) {
         console.warn('[VideoPlayer] p2p.enabled but p2p-media-loader-hlsjs is not installed — using HTTP only');
       }
-    } else if (p2pConfig?.enabled && this.config.debug) {
+    } else if (p2pConfig?.enabled && p2pConfig.provider !== 'swarmcloud' && this.config.debug) {
       console.warn('[VideoPlayer] p2p.enabled but WebRTC is unavailable — using HTTP only');
     }
 
@@ -1531,6 +1718,59 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     }
   }
 
+  private usesSwarmCloud(): boolean {
+    return !!this.config.p2p?.enabled && this.config.p2p.provider === 'swarmcloud';
+  }
+
+  /**
+   * SwarmCloud replaces hls.js's fragment loader; it ignores URL rewrites made in xhrSetup, so the token
+   * refresher (already attached) rewrites the parsed segment URLs for it. Failures fall back to HTTP.
+   */
+  private attachSwarmCloud(hls: any, P2pEngineHls: any): void {
+    const p2p = this.config.p2p!;
+    if (!P2pEngineHls) {
+      if (this.config.debug) console.warn('[VideoPlayer] p2p.provider "swarmcloud" but @swarmcloud/hls is not installed — using HTTP only');
+      return;
+    }
+    try {
+      if (typeof P2pEngineHls.isSupported === 'function' && !P2pEngineHls.isSupported()) {
+        if (this.config.debug) console.warn('[VideoPlayer] SwarmCloud P2P not supported in this browser — using HTTP only');
+        return;
+      }
+      const pattern = this.config.security?.tokenPrefixPattern;
+      const stats = new P2PStatsTracker(this._sessionId);
+      // SwarmCloud refuses a custom channelId without a token — and throws only after it has already
+      // replaced hls.js's loader, so never let it get that far
+      let channelId: P2PConfigChannelId | undefined = p2p.channelId ?? ((m3u8Url: string) => tokenlessChannelId(m3u8Url, pattern));
+      if (!p2p.token) {
+        if (p2p.channelId) {
+          console.warn('[VideoPlayer] SwarmCloud: p2p.channelId requires p2p.token — using HTTP only');
+          return;
+        }
+        console.warn('[VideoPlayer] SwarmCloud without p2p.token: using its default channel id (the full URL). ' +
+          'With per-viewer signed URLs viewers will NOT share segments; set p2p.token.');
+        channelId = undefined;
+      }
+      const engine = new P2pEngineHls({
+        hlsjsInstance: hls,
+        live: this.isLiveStream() || this.expectsLive(),
+        token: p2p.token,
+        trackerZone: p2p.trackerZone,
+        ...(channelId ? { channelId } : {}),
+        // SwarmCloud reports totals in KB
+        getStats: (totalP2PDownloaded: number, totalP2PUploaded: number, totalHTTPDownloaded: number) => {
+          stats.setTotals({ httpBytes: totalHTTPDownloaded * 1024, p2pBytes: totalP2PDownloaded * 1024, uploadedBytes: totalP2PUploaded * 1024 });
+        },
+        getPeersInfo: (peers: string[]) => stats.setPeerCount(Array.isArray(peers) ? peers.length : 0),
+        ...(p2p.swarmcloud ?? {}),
+      });
+      this.swarmEngine = engine;
+      this.startP2PStats(null, stats);
+    } catch (error) {
+      console.warn('[VideoPlayer] SwarmCloud P2P unavailable, continuing over HTTP:', error);
+    }
+  }
+
   /** p2p-media-loader's own HTTP segment requests: add the auth header, preserve byte ranges */
   private p2pHttpRequestSetup = async (
     segmentUrl: string,
@@ -1550,10 +1790,10 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     return new Request(url, { headers, signal });
   };
 
-  private startP2PStats(engine: any): void {
+  private startP2PStats(engine: any, prepared?: P2PStatsTracker): void {
     this.stopP2PStats();
-    const tracker = new P2PStatsTracker(this._sessionId);
-    tracker.attach(engine);
+    const tracker = prepared ?? new P2PStatsTracker(this._sessionId);
+    if (engine) tracker.attach(engine);
     this.p2pStats = tracker;
     this.p2pEngine = engine;
     this.p2pStallTimes = [];
@@ -1608,8 +1848,15 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   }
 
   /** Measure live latency (throttled to ~1/s), update the LIVE badge and emit `latency` */
+  private stopPausedLatencyTimer(): void {
+    if (this.pausedLatencyTimer) {
+      clearInterval(this.pausedLatencyTimer);
+      this.pausedLatencyTimer = null;
+    }
+  }
+
   private trackLatency(): void {
-    if (!this.isLiveStream()) return;
+    if (!this.isLiveStream() || this.liveSeekPending) return;
     const now = Date.now();
     if (now - this.lastLatencyEmit < 1000) return;
 
@@ -1620,7 +1867,10 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
 
     if (snapshot.atLiveEdge !== this.atLiveEdge) {
       this.atLiveEdge = snapshot.atLiveEdge;
-      this.controlsManager?.updateLiveEdge(snapshot.atLiveEdge);
+      this.controlsManager?.updateLiveEdge(snapshot.atLiveEdge, this.config.live?.messages?.goLive);
+      const payload: LiveEdgeChangeEvent = { atLiveEdge: snapshot.atLiveEdge, latencySec: snapshot.latency, sessionId: this._sessionId };
+      this.emitEvent('player-live-edge-change', payload);
+      this.eventBus.emit('liveEdgeChange', payload);
     }
     this.emitEvent('player-latency', snapshot);
     this.eventBus.emit('latency', snapshot);
@@ -1645,8 +1895,11 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       target = resolveLowLatency(this.config.lowLatency, undefined)?.targetLatency ?? 3 * 2;
     }
 
-    // Hysteresis: fall behind at target + 2 s, count as live again within target + 1 s
-    const atLiveEdge = this.atLiveEdge ? latency <= target + 2 : latency <= target + 1;
+    // Behind the live edge above ~1.5 × target latency (at least target + 1 s); hysteresis: live again
+    // within 1.25 × target (at least target + 0.5 s) so the badge doesn't flicker
+    const behindAt = Math.max(target * 1.5, target + 1);
+    const liveAgainAt = Math.max(target * 1.25, target + 0.5);
+    const atLiveEdge = this.atLiveEdge ? latency <= behindAt : latency <= liveAgainAt;
     return {
       latency,
       targetLatency: target,
@@ -1657,10 +1910,26 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   }
 
   private handleHlsError(hls: any, data: any): void {
+    const lifecycle = this.liveLifecycle;
+    const status = data?.response?.code;
+    lifecycle?.httpStatus(status);
+    if (lifecycle?.isEnded()) return;
+
+    // Live class not started yet: manifest/playlist 404 or an empty playlist before the first frame
+    if (lifecycle?.isActive() && !lifecycle.hasStarted()) {
+      const notThereYet =
+        data?.details === 'levelEmptyError' ||
+        (status === 404 && (data?.details === 'manifestLoadError' || data?.details === 'levelLoadError'));
+      if (notThereYet) {
+        if (data.fatal) this.reportError('NETWORK_ERROR', String(data.details), false);
+        lifecycle.streamUnavailable();
+        return;
+      }
+    }
+
     // hls.js recovers non-fatal errors itself
     if (!data?.fatal) return;
 
-    const status = data.response?.code;
     const refresher = this.tokenRefresher;
 
     // Signed URLs: hls.js already retried (with in-place token swaps). Last resort: fresh URL + reload
@@ -2152,15 +2421,55 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
 
     const syncPosition = this.hls?.liveSyncPosition;
     if (typeof syncPosition === 'number' && Number.isFinite(syncPosition)) {
+      if (Math.abs(video.currentTime - syncPosition) > 0.5) this.liveSeekPending = true;
       video.currentTime = syncPosition;
     } else if (video.seekable && video.seekable.length) {
       const end = video.seekable.end(video.seekable.length - 1);
-      const target = resolveLowLatency(this.config.lowLatency, undefined)?.targetLatency ?? 3;
-      video.currentTime = Math.max(0, end - target);
+      this.liveSeekPending = true;
+      video.currentTime = Math.max(0, end - this.nativeLiveHoldBack());
     }
+    const wasBehind = !this.atLiveEdge;
     this.atLiveEdge = true;
     this.controlsManager?.updateLiveEdge(true);
+    if (wasBehind) {
+      // The seek hasn't landed yet: report the latency being steered to
+      const target = typeof this.hls?.targetLatency === 'number' ? this.hls.targetLatency : this.nativeLiveHoldBack();
+      const payload: LiveEdgeChangeEvent = { atLiveEdge: true, latencySec: target, sessionId: this._sessionId };
+      this.emitEvent('player-live-edge-change', payload);
+      this.eventBus.emit('liveEdgeChange', payload);
+    }
     if (video.paused) this.play().catch(() => {});
+  }
+
+  /** Alias of seekToLive() */
+  goToLive(): void {
+    this.seekToLive();
+  }
+
+  /**
+   * The live stream has ended (e.g. your backend got a `stream.ended` webhook and pushed it). Shows the
+   * "ended" overlay, stops loading and emits `streamEnded`.
+   */
+  markStreamEnded(): void {
+    if (!this.liveLifecycle) return;
+    this.liveLifecycle.setActive(true);
+    this.liveLifecycle.markEnded();
+  }
+
+  /** Live lifecycle state: idle | waiting | playing | reconnecting | ended | offline */
+  getLiveState(): LiveState {
+    return this.liveLifecycle?.getState() ?? 'idle';
+  }
+
+  /**
+   * Native HLS (no hls.js): distance from the end of the seekable window to start at —
+   * 3 × target duration for regular HLS (as hls.js), the configured target for low latency.
+   */
+  private nativeLiveHoldBack(): number {
+    if (this.config.live?.latencyMode === 'low') return 1.5;
+    const ll = resolveLowLatency(this.config.lowLatency, undefined);
+    if (ll && !this.config.live?.latencyMode) return ll.targetLatency;
+    return 3 * 3;
   }
 
   /** Latest live latency snapshot, or null when not playing a live stream */
@@ -2437,6 +2746,9 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     this.stopHealthyTimer();
     this.tokenRefresher?.destroy();
     this.tokenRefresher = null;
+    this.liveLifecycle?.destroy();
+    this.liveLifecycle = null;
+    this.removeUnmutePill();
 
     if (this.videoElement) {
       this.videoElement.pause();

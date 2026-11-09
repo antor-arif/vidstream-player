@@ -36,6 +36,7 @@ import type {
   P2PConfig,
   P2PStats,
   LiveConfig,
+  LiveState,
   LatencyEvent,
 } from './types';
 
@@ -666,6 +667,11 @@ export class VideoPlayerElement extends SSRHTMLElement {
   getHls(): any { return this.player?.getHls() ?? null; }
   /** Active dash.js MediaPlayer, or null */
   getDash(): any { return this.player?.getDash() ?? null; }
+  /** Alias of seekToLive() */
+  goToLive(): void { this.player?.goToLive(); }
+  /** Show the "ended" state (e.g. after a stream.ended push from your backend) */
+  markStreamEnded(): void { this.player?.markStreamEnded(); }
+  getLiveState(): LiveState { return this.player?.getLiveState() ?? 'idle'; }
 
   // ============================================================================
   // CONVENIENCE PROPERTIES

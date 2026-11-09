@@ -123,6 +123,26 @@ Instructly Media Engine URLs carry the token in the **path** (`/t/{exp}/{nonce}/
   - The fake backend is `/api/sign?ttl=&kind=hls|llhls`. `/admin/ip?ip=` simulates a network switch, and `/admin/state?s=waiting|live|ended` drives the lifecycle.
   - It generates its media with ffmpeg, or with Docker `linuxserver/ffmpeg` when ffmpeg isn't on PATH.
 
+## Live UX (P1, 2026-11-09)
+- **`src/streaming/liveLifecycle.ts`** (`LiveLifecycle`): states `idle | waiting | playing | reconnecting | ended | offline`, each with an overlay (`.vp-live-overlay`, texts from `live.messages`) and the event `liveStateChange` / `player-live-state-change`.
+  - It is active when `mode: 'live'`, when a `live` config is set, or when hls.js reports `details.live`.
+  - **Waiting:** a manifest/level 404 or `levelEmptyError` before the first frame (or a live playlist with no segments). The player then restarts every `live.offlinePollInterval` (5 s).
+  - **Reconnecting:** the playlist hasn't advanced for ≥ max(8 s, 3 × target duration), or there are network failures after the start. Live network failures never show the error overlay; once the retry budget is used up the player keeps reconnecting in the background.
+  - **Ended:** the playlist has been stuck for ≥ `live.endedTimeout` (20 s) and a 404 was seen; or ENDLIST; or `markStreamEnded()`. Loading stops, there is no Retry button, and `streamEnded` / `player-stream-ended` fire.
+  - **Offline:** the window `offline` event. `online` resumes loading immediately with `hls.startLoad(-1)`.
+- **Go live:**
+  - **Badge threshold:** the badge goes grey when latency is above max(1.5 × target, target + 1), and back to live at or below max(1.25 × target, target + 0.5).
+  - **API:** `goToLive()` is an alias of `seekToLive()`. With native HLS it seeks to `seekable.end − 9 s` (1.5 s in low-latency mode).
+  - **Events:** `liveEdgeChange` / `player-live-edge-change`.
+  - **Resume:** `live.resumeAtLiveEdge` (default true) seeks to live on `play` after a pause longer than 1 s.
+- **Controls in live mode** (`ControlsManager.isLive`, set by `updateLiveState`): ArrowLeft, double-click left, double-tap left, Home and End do nothing. ArrowRight and the right-side double-click/double-tap call `onGoLive`. The quality button is hidden when there are fewer than 2 renditions.
+- **Autoplay:** blocked autoplay on a live stream retries muted and shows the `.vp-unmute-pill` ("Tap to unmute"), then emits `autoplayBlocked` / `player-autoplay-blocked` with `{ mutedFallback }`.
+- **SwarmCloud:** `p2p: { enabled, provider: 'swarmcloud', token, trackerZone, channelId, swarmcloud }`.
+  - It lazy-loads the optional peer `@swarmcloud/hls`, with `window.P2pEngineHls` as the fallback, and creates it after the token refresher is attached and before `onHlsCreated` / `loadSource`.
+  - The default `channelId` is `tokenlessChannelId(url)`, which keeps the host.
+  - Stats come from `getStats` (KB → bytes) and `getPeersInfo`. The engine is destroyed in `teardownEngines`.
+  - The default provider is still p2p-media-loader.
+
 ## Rules that protect users of the package
 
 1. **The public API only grows.** Never rename or remove anything exported from `src/index.ts` or `src/react/index.ts`, any `PlayerConfig` key, a public method, a DOM event name, a CSS class consumers may style (`vp-*`, `video-player-container`), or the `<video-player>` tag. Add aliases instead and mark the old name `@deprecated` in JSDoc. Breaking changes need a major version bump plus a migration note in the docs site.

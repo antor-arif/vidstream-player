@@ -38,6 +38,10 @@ import type {
   P2PStats,
   LiveConfig,
   TokenRefreshEvent,
+  LiveState,
+  LiveStateChangeEvent,
+  LiveEdgeChangeEvent,
+  AutoplayBlockedEvent,
   LatencyEvent,
 } from '../types';
 import { VideoPlayerElement, registerVideoPlayerElement } from '../webcomponent';
@@ -127,6 +131,14 @@ export interface VideoPlayerProps {
   onTokenRefreshed?: (event: TokenRefreshEvent) => void;
   /** Getting a fresh signed URL / token failed */
   onTokenRefreshFailed?: (event: TokenRefreshEvent) => void;
+  /** Live lifecycle: waiting / playing / reconnecting / ended / offline */
+  onLiveStateChange?: (event: LiveStateChangeEvent) => void;
+  /** Playback moved away from / back to the live edge */
+  onLiveEdgeChange?: (event: LiveEdgeChangeEvent) => void;
+  /** The live stream ended */
+  onStreamEnded?: () => void;
+  /** The browser blocked autoplay (live streams fall back to muted playback) */
+  onAutoplayBlocked?: (event: AutoplayBlockedEvent) => void;
 }
 
 export interface VideoPlayerRef extends PlayerAPI {
@@ -156,6 +168,11 @@ export interface VideoPlayerRef extends PlayerAPI {
   getHls(): any;
   /** Active dash.js MediaPlayer, or null */
   getDash(): any;
+  /** Alias of seekToLive() */
+  goToLive(): void;
+  /** Show the "ended" state (e.g. after a stream.ended push from your backend) */
+  markStreamEnded(): void;
+  getLiveState(): LiveState;
   // Element access
   getElement(): VideoPlayerElement | null;
 }
@@ -296,6 +313,10 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
         'player-p2p-stats': call((p, e) => p.onP2PStats?.(e.detail?.data)),
         'player-token-refreshed': call((p, e) => p.onTokenRefreshed?.(e.detail?.data)),
         'player-token-refresh-failed': call((p, e) => p.onTokenRefreshFailed?.(e.detail?.data)),
+        'player-live-state-change': call((p, e) => p.onLiveStateChange?.(e.detail?.data)),
+        'player-live-edge-change': call((p, e) => p.onLiveEdgeChange?.(e.detail?.data)),
+        'player-stream-ended': call(p => p.onStreamEnded?.()),
+        'player-autoplay-blocked': call((p, e) => p.onAutoplayBlocked?.(e.detail?.data)),
         'player-loaded': call(() => {}),
         'player-ratechange': call(() => {}),
       };
@@ -398,6 +419,9 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
         getP2PStats: () => elementRef.current?.getP2PStats() ?? null,
         getHls: () => elementRef.current?.getHls() ?? null,
         getDash: () => elementRef.current?.getDash() ?? null,
+        goToLive: () => elementRef.current?.goToLive(),
+        markStreamEnded: () => elementRef.current?.markStreamEnded(),
+        getLiveState: () => elementRef.current?.getLiveState() ?? 'idle',
         // Element
         getElement: () => elementRef.current,
       }),

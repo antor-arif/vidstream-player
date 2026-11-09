@@ -53,4 +53,10 @@ export type {
   LiveConfig,
   LiveLatencyMode,
   TokenRefreshEvent,
+  LiveState,
+  LiveMessages,
+  LiveStateChangeEvent,
+  LiveEdgeChangeEvent,
+  AutoplayBlockedEvent,
+  P2PProvider,
 } from '../types';
