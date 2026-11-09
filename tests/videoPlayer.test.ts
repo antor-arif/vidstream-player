@@ -320,12 +320,16 @@ describe('errors', () => {
     expect(message.textContent).toContain('<img');
   });
 
-  it('reports STREAM_ENDED when a live stream ends', () => {
+  it('a live stream ending is streamEnded, not an error', () => {
     const { player, video } = createPlayer({ mode: 'live' });
-    const bus: any[] = [];
-    player.on('error', (e: any) => bus.push(e));
+    const errors: any[] = [];
+    const ended: any[] = [];
+    player.on('error', (e: any) => errors.push(e));
+    player.on('streamEnded', (e: any) => ended.push(e));
     fire(video, 'ended');
-    expect(bus[0]).toMatchObject({ code: 'STREAM_ENDED', fatal: false });
+    expect(errors).toEqual([]);
+    expect(ended).toHaveLength(1);
+    expect(player.getLiveState()).toBe('ended');
   });
 });
 

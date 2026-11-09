@@ -9,7 +9,8 @@
 //                           ▼
 //                         ended (terminal for this source)
 //
-//   offline: browser `offline` event (any state but ended); `online` resumes loading at once.
+//   offline: browser `offline` event (any state but ended/error); `online` resumes loading at once.
+//   error:   a fatal error is on screen (fail()); the overlay hides. retrying() (Retry / restart) leaves it.
 //
 // Kept free of hls.js: the player feeds it signals and implements LiveLifecycleHost.
 
@@ -99,9 +100,9 @@ export class LiveLifecycle {
     this.setState('idle');
   }
 
-  /** Manifest 404 or a playlist without segments */
+  /** Manifest 404 or a playlist without segments (or too few to start with) */
   streamUnavailable(): void {
-    if (!this.active || this.state === 'ended') return;
+    if (!this.active || this.state === 'ended' || this.state === 'error') return;
     this.last404At = Date.now();
     if (this.started) {
       this.setState('reconnecting');
@@ -139,8 +140,22 @@ export class LiveLifecycle {
 
   /** Network trouble after playback started; the player keeps retrying */
   networkFailure(): void {
-    if (!this.active || !this.started || this.state === 'ended' || this.state === 'offline') return;
+    if (!this.active || !this.started || this.state === 'ended' || this.state === 'offline' || this.state === 'error') return;
     this.setState('reconnecting');
+  }
+
+  /** A fatal error is shown: hide the live overlay, stop polling, report `error` */
+  fail(): void {
+    if (!this.active || this.state === 'ended') return;
+    this.clearPoll();
+    this.setState('error');
+  }
+
+  /** Playback is being restarted after an error (Retry button, background reconnect) */
+  retrying(): void {
+    if (this.state !== 'error') return;
+    this.lastAdvanceAt = Date.now();
+    this.setState(this.started ? 'reconnecting' : 'idle');
   }
 
   markEnded(): void {
@@ -176,7 +191,7 @@ export class LiveLifecycle {
   }
 
   private handleOffline(): void {
-    if (!this.active || this.state === 'ended' || this.state === 'offline') return;
+    if (!this.active || this.state === 'ended' || this.state === 'offline' || this.state === 'error') return;
     this.stateBeforeOffline = this.state;
     this.setState('offline');
   }

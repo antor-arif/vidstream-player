@@ -1,7 +1,7 @@
 // Watch-time statistics for live sessions. Percentages and milestones mean nothing for a live class
 // (no fixed duration), so LMS and analytics get "how long did the viewer actually watch" instead.
 
-import type { LiveWatchStats } from '../types';
+import type { LiveState, LiveWatchStats } from '../types';
 
 export class LiveSessionStats {
   private watchedMs = 0;
@@ -11,6 +11,14 @@ export class LiveSessionStats {
   private rebufferCount = 0;
   private rebufferMs = 0;
   private bufferingSince = 0;
+  /** The video is stalled (waiting since the last frame) */
+  private stalled = false;
+  /** The current stall was counted in rebufferCount */
+  private stallCounted = false;
+  /** Rebuffer time accumulated by the current stall */
+  private stallMs = 0;
+  /** Live state allows rebuffer time (playing / reconnecting); true when no lifecycle feeds us */
+  private counting = true;
   private latencySum = 0;
   private latencySamples = 0;
   private qualitySwitches = 0;
@@ -24,6 +32,7 @@ export class LiveSessionStats {
     const t = this.now();
     if (this.joinedAt === null) this.joinedAt = t;
     this.closeBuffering(t);
+    this.stalled = false;
     if (!this.playingSince) this.playingSince = t;
     this.lastSeenAt = t;
   }
@@ -35,9 +44,32 @@ export class LiveSessionStats {
   onWaiting(seeking = false): void {
     const t = this.now();
     this.closePlaying(t);
-    if (!seeking && this.joinedAt !== null && !this.bufferingSince) {
-      this.rebufferCount++;
-      this.bufferingSince = t;
+    if (seeking || this.joinedAt === null || this.stalled) return;
+    this.stalled = true;
+    this.stallCounted = false;
+    this.stallMs = 0;
+    if (this.counting) this.openStall(t);
+  }
+
+  /**
+   * Live lifecycle state changed. Rebuffer time only accrues in `playing` / `reconnecting`; a stall
+   * still open when the stream ends is the class ending, not a quality problem, so it is dropped
+   * entirely (time and count).
+   */
+  onLiveState(state: LiveState): void {
+    const t = this.now();
+    this.counting = state === 'playing' || state === 'reconnecting';
+    if (this.counting) {
+      if (this.stalled && !this.bufferingSince) this.openStall(t);
+      return;
+    }
+    this.closeBuffering(t);
+    if (state === 'ended' && this.stalled) {
+      if (this.stallCounted) this.rebufferCount--;
+      this.rebufferMs -= this.stallMs;
+      this.stalled = false;
+      this.stallCounted = false;
+      this.stallMs = 0;
     }
   }
 
@@ -46,6 +78,7 @@ export class LiveSessionStats {
     const t = this.now();
     this.closePlaying(t);
     this.closeBuffering(t);
+    this.stalled = false;
   }
 
   onLatency(latency: number): void {
@@ -89,9 +122,19 @@ export class LiveSessionStats {
     }
   }
 
+  private openStall(t: number): void {
+    if (!this.stallCounted) {
+      this.rebufferCount++;
+      this.stallCounted = true;
+    }
+    this.bufferingSince = t;
+  }
+
   private closeBuffering(t: number): void {
     if (this.bufferingSince) {
-      this.rebufferMs += t - this.bufferingSince;
+      const ms = t - this.bufferingSince;
+      this.rebufferMs += ms;
+      this.stallMs += ms;
       this.bufferingSince = 0;
     }
   }
