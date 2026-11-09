@@ -99,6 +99,30 @@ Config: `lowLatency: true | { targetLatency, maxLatency, maxCatchUpRate, partLoa
 - **Default live test stream:** https://demo.unified-streaming.com/k8s/live/stable/live.isml/.m3u8 (1.92 s segments, no parts).
 - Measured results, the stall guard (`checkP2PStall` → `safeMode`), the offload default (target 3 s ≈ 5 s actual) and the real-stream test tooling are in known-issues KI-50 and testing.md §7. Recommended 3–5 s + P2P config: `lowLatency: true, p2p: { enabled: true, strategy: 'offload' }`.
 
+## Signed / IP-bound live URLs (added 2026-11-09, branch feat/live-streaming)
+
+Instructly Media Engine URLs carry the token in the **path** (`/t/{exp}/{nonce}/{sig}/…`, Bunny `/bcdn_token=…/…`) and are bound to the viewer's IP; the edge answers 403 on expiry or an IP change.
+- **`src/streaming/tokenRefresh.ts`** (`TokenRefresher`): TypeScript port of the Media Engine's `tools/player/hls-token-refresh.js`. One refresher per loaded source, attached to every hls.js instance rebuilt for it. It handles:
+  - the `xhrSetup` URL swap, which waits for an in-flight refresh;
+  - load policies with `maxNumRetry: 6` and a `shouldRetry` that refreshes on 401/403 and retries status 0 / timeouts;
+  - rewriting already-parsed fragment/part URLs (needed by P2P loaders);
+  - a limit of 4 refreshes per minute.
+- **Configuration:** enabled by `security.refreshPlaybackUrl`, or by `security.refreshPlaybackToken` when it resolves to an `http(s)://` URL. A bare token still means "new auth header".
+  - The token pattern is configurable with `security.tokenPrefixPattern`.
+  - `config.source.src` is never changed, because the React wrapper would reload. Restarts use `tokenRefresher.rewrite(src)`.
+- **Load policies:** installed for every hls.js load. Without a refresher, a 401/403 keeps hls.js's default (no retry, then the AUTH_ERROR UI).
+- **Fatal network error with a refresher:** refresh, then `hls.loadSource(fresh)` (the last resort), within the `errorRecovery` budget.
+- **Native HLS:** on `error`, or on `stalled` plus a probe that returns 403, the player refreshes and sets `video.src` again.
+- **Retry budget:** refilled after 10 s of uninterrupted playback, not on the first `playing` event. Live streams use `errorRecovery.liveMaxRetries` (default 10), the backoff is capped at `maxRetryDelay` (30 s), and the budget is unlimited while `navigator.onLine === false`.
+- **hls.js config precedence:** `live.latencyMode` ('standard' | 'low'; 'low' never sets `liveSync*`) wins over `lowLatency`, which wins over the legacy defaults. `config.hlsConfig` merges on top. The token-refresh settings come last, and a consumer's own `*LoadPolicy` wins.
+  - Live back buffer is 30 s, and `liveMaxLatencyDurationCount` is 10 for count-based sync, applied at LEVEL_LOADED when the playlist is live.
+- **API:** `onHlsCreated(hls, Hls)` runs before `loadSource`/`attachMedia`. Also bus `hlsCreated`, DOM `player-hls-created`, `getHls()` and `getDash()`.
+- **Events:** `tokenRefreshed` / `tokenRefreshFailed` (DOM: `player-token-refreshed`, `player-token-refresh-failed`). They never contain the token. Use `redactUrl()` when logging URLs.
+- **Test server:** `scripts/signed-live-server.mjs [8098]` is a local stand-in for the edge.
+  - It uses the same token algorithm as `sign-url.js`, a 3 s TS ladder (720p + 360p) and LL-HLS 0.5 s parts.
+  - The fake backend is `/api/sign?ttl=&kind=hls|llhls`. `/admin/ip?ip=` simulates a network switch, and `/admin/state?s=waiting|live|ended` drives the lifecycle.
+  - It generates its media with ffmpeg, or with Docker `linuxserver/ffmpeg` when ffmpeg isn't on PATH.
+
 ## Rules that protect users of the package
 
 1. **The public API only grows.** Never rename or remove anything exported from `src/index.ts` or `src/react/index.ts`, any `PlayerConfig` key, a public method, a DOM event name, a CSS class consumers may style (`vp-*`, `video-player-container`), or the `<video-player>` tag. Add aliases instead and mark the old name `@deprecated` in JSDoc. Breaking changes need a major version bump plus a migration note in the docs site.
