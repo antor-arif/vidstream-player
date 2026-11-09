@@ -605,7 +605,7 @@ p2p: {
   enabled: true,
   provider: 'swarmcloud',
   token: 'YOUR_SWARMCLOUD_TOKEN',   // required for the custom channel id below
-  // trackerZone: 'eu',
+  // trackerZone: 'hk',              // tracker region; default 'hk' (Hong Kong)
   // channelId: url => …,           // default: host + path with the URL token removed (host kept on purpose)
   // swarmcloud: { …raw P2pEngineHls options }
 }

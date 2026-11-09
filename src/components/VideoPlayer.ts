@@ -1807,7 +1807,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
         hlsjsInstance: hls,
         live: this.isLiveStream() || this.expectsLive(),
         token: p2p.token,
-        trackerZone: p2p.trackerZone,
+        trackerZone: p2p.trackerZone ?? 'hk',
         ...(channelId ? { channelId } : {}),
         // SwarmCloud reports totals in KB
         getStats: (totalP2PDownloaded: number, totalP2PUploaded: number, totalHTTPDownloaded: number) => {

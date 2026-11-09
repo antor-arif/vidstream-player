@@ -258,7 +258,7 @@ export interface P2PConfig {
   provider?: P2PProvider;
   /** SwarmCloud: account token (required for a custom channelId) */
   token?: string;
-  /** SwarmCloud: tracker region, e.g. 'eu' | 'hk' | 'us' | 'cn' */
+  /** SwarmCloud: tracker region, e.g. 'hk' | 'eu' | 'us' | 'cn'. Default: 'hk' (Hong Kong) */
   trackerZone?: string;
   /**
    * SwarmCloud: viewers with the same channel id share segments. Default: host + path with the URL token

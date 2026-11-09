@@ -283,6 +283,7 @@ describe('VideoPlayer live UX', () => {
     expect(cfg.hlsjsInstance).toBe(hls);
     expect(cfg.live).toBe(true);
     expect(cfg.token).toBe('tok');
+    expect(cfg.trackerZone).toBe('hk');
     expect(cfg.channelId(SRC)).toBe('edge.example.com/abr/class-1/ts:master.m3u8');
     expect(hls.url).toBe(SRC);
     cfg.getStats(10, 0, 30, 0);
@@ -290,6 +291,14 @@ describe('VideoPlayer live UX', () => {
     expect(player.getP2PStats()).toMatchObject({ p2pBytes: 10240, httpBytes: 30720, peers: 2 });
     player.destroy();
     expect(mocks.swarm[0].destroyed).toBe(true);
+  });
+
+  it('SwarmCloud trackerZone: an explicit zone overrides the hk default', async () => {
+    const { player } = createPlayer({ source: { src: SRC }, mode: 'live', p2p: { enabled: true, provider: 'swarmcloud', token: 'tok', trackerZone: 'eu' } });
+    await nextHls(0);
+    await flush(30);
+    expect(mocks.swarm[0].config.trackerZone).toBe('eu');
+    player.destroy();
   });
 
   it('SwarmCloud without a token: no custom channelId (SwarmCloud would throw half-attached)', async () => {

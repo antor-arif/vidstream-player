@@ -139,6 +139,7 @@ Instructly Media Engine URLs carry the token in the **path** (`/t/{exp}/{nonce}/
 - **Autoplay:** blocked autoplay on a live stream retries muted and shows the `.vp-unmute-pill` ("Tap to unmute"), then emits `autoplayBlocked` / `player-autoplay-blocked` with `{ mutedFallback }`.
 - **SwarmCloud:** `p2p: { enabled, provider: 'swarmcloud', token, trackerZone, channelId, swarmcloud }`.
   - It lazy-loads the optional peer `@swarmcloud/hls`, with `window.P2pEngineHls` as the fallback, and creates it after the token refresher is attached and before `onHlsCreated` / `loadSource`.
+  - `trackerZone` defaults to `'hk'` (Hong Kong).
   - The default `channelId` is `tokenlessChannelId(url)`, which keeps the host.
   - Stats come from `getStats` (KB → bytes) and `getPeersInfo`. The engine is destroyed in `teardownEngines`.
   - The default provider is still p2p-media-loader.
