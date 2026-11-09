@@ -97,6 +97,8 @@ export class ControlsManager {
   private pipBtn: HTMLElement | null = null;
   private speedBtn: HTMLElement | null = null;
   private qualityBtn: HTMLElement | null = null;
+  /** Live stream: seeking gestures/keys are disabled (only "go live") */
+  private isLive = false;
   private subtitlesBtn: HTMLElement | null = null;
   private chaptersBtn: HTMLElement | null = null;
   private activeDropdown: HTMLElement | null = null;
@@ -1122,9 +1124,15 @@ export class ControlsManager {
       const rect = this.container.getBoundingClientRect();
       const x = e.clientX - rect.left;
       if (x < rect.width / 3) {
+        // Live: no seeking back inside the DVR window
+        if (this.isLive) return;
         this.callbacks.onRewind();
         this.showSeekFeedback('left');
       } else if (x > (rect.width * 2) / 3) {
+        if (this.isLive) {
+          this.callbacks.onGoLive?.();
+          return;
+        }
         this.callbacks.onForward();
         this.showSeekFeedback('right');
       } else {
@@ -1252,11 +1260,17 @@ export class ControlsManager {
       if (this.tapTimer) { clearTimeout(this.tapTimer); this.tapTimer = null; }
       const seconds = this.getDoubleTapSeconds();
       if (zone === 'left') {
-        this.seekBy(-seconds);
-        this.showSeekFeedback('left', seconds);
+        if (!this.isLive) {
+          this.seekBy(-seconds);
+          this.showSeekFeedback('left', seconds);
+        }
       } else if (zone === 'right') {
-        this.seekBy(seconds);
-        this.showSeekFeedback('right', seconds);
+        if (this.isLive) {
+          this.callbacks.onGoLive?.();
+        } else {
+          this.seekBy(seconds);
+          this.showSeekFeedback('right', seconds);
+        }
       } else {
         this.callbacks.onFullscreenToggle();
       }
@@ -1540,19 +1554,21 @@ export class ControlsManager {
         break;
       case 'ArrowLeft':
         e.preventDefault();
-        this.callbacks.onRewind();
+        // Live: no seeking back
+        if (!this.isLive) this.callbacks.onRewind();
         break;
       case 'ArrowRight':
         e.preventDefault();
-        this.callbacks.onForward();
+        if (this.isLive) this.callbacks.onGoLive?.();
+        else this.callbacks.onForward();
         break;
       case 'Home':
-        if (!onProgressBar) return;
+        if (!onProgressBar || this.isLive) return;
         e.preventDefault();
         this.callbacks.onSeek(0);
         break;
       case 'End':
-        if (!onProgressBar) return;
+        if (!onProgressBar || this.isLive) return;
         e.preventDefault();
         this.callbacks.onSeek(1);
         break;
@@ -1896,6 +1912,8 @@ export class ControlsManager {
   updateQualities(qualities: QualityLevel[], showAuto = true): void {
     this.qualityLevels = qualities;
     this.showAutoQuality = showAuto;
+    // Nothing to choose with a single rendition (e.g. a live app with one 720p ladder)
+    if (this.qualityBtn) this.qualityBtn.style.display = qualities.length < 2 ? 'none' : '';
   }
 
   /**
@@ -1993,15 +2011,16 @@ export class ControlsManager {
    * Update live state
    */
   updateLiveState(isLive: boolean): void {
+    this.isLive = isLive;
     this.container.classList.toggle('vp-live', isLive);
   }
 
   /** Grey the LIVE badge (and make it a "jump to live" button) when playback is behind the live edge */
-  updateLiveEdge(atLiveEdge: boolean): void {
+  updateLiveEdge(atLiveEdge: boolean, goLiveLabel = 'Jump to live'): void {
     if (!this.liveBadge) return;
     this.liveBadge.classList.toggle('vp-live-behind', !atLiveEdge);
-    this.liveBadge.setAttribute('aria-label', atLiveEdge ? 'Live' : 'Jump to live');
-    this.liveBadge.setAttribute('title', atLiveEdge ? 'Live' : 'Jump to live');
+    this.liveBadge.setAttribute('aria-label', atLiveEdge ? 'Live' : goLiveLabel);
+    this.liveBadge.setAttribute('title', atLiveEdge ? 'Live' : goLiveLabel);
   }
 
   /**
