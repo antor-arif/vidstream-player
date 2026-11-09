@@ -3,6 +3,7 @@ import type { ErrorRecoveryConfig, VidstreamError, VidstreamErrorCode } from '..
 export class ErrorRecoveryManager {
   private config: Required<ErrorRecoveryConfig>;
   private retryCount = 0;
+  private live = false;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private liveReconnectTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -11,8 +12,19 @@ export class ErrorRecoveryManager {
       enabled: config.enabled ?? true,
       maxRetries: config.maxRetries ?? 3,
       retryDelay: config.retryDelay ?? 2000,
+      maxRetryDelay: config.maxRetryDelay ?? 30000,
+      liveMaxRetries: config.liveMaxRetries ?? 10,
       onError: config.onError ?? (() => {}),
     };
+  }
+
+  /** Live streams get a larger budget (`liveMaxRetries`) */
+  setLive(live: boolean): void {
+    this.live = live;
+  }
+
+  private isOffline(): boolean {
+    return typeof navigator !== 'undefined' && navigator.onLine === false;
   }
 
   isEnabled(): boolean {
@@ -20,19 +32,35 @@ export class ErrorRecoveryManager {
   }
 
   canRetry(): boolean {
-    return this.config.enabled && this.retryCount < this.config.maxRetries;
+    if (!this.config.enabled) return false;
+    // A live viewer who is offline keeps retrying until the network comes back
+    if (this.live && this.isOffline()) return true;
+    return this.retryCount < (this.live ? this.config.liveMaxRetries : this.config.maxRetries);
   }
 
-  /** Schedule `retryFn` after an exponential backoff (retryDelay × 2^attempt). Replaces any pending retry. */
+  /**
+   * Schedule `retryFn` after an exponential backoff (retryDelay × 2^attempt, capped at maxRetryDelay).
+   * Replaces any pending retry. Attempts made while offline (live) don't use up the budget.
+   */
   scheduleRetry(retryFn: () => void): void {
     if (!this.canRetry()) return;
     if (this.retryTimer) clearTimeout(this.retryTimer);
-    const delay = this.config.retryDelay * Math.pow(2, this.retryCount);
-    this.retryCount++;
+    const delay = Math.min(this.config.maxRetryDelay, this.config.retryDelay * Math.pow(2, this.retryCount));
+    if (!(this.live && this.isOffline())) this.retryCount++;
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
       retryFn();
     }, delay);
+  }
+
+  /** Attempts used so far */
+  getRetryCount(): number {
+    return this.retryCount;
+  }
+
+  /** Refill the retry budget without cancelling a pending retry (sustained healthy playback) */
+  resetCount(): void {
+    this.retryCount = 0;
   }
 
   /** Refill the retry budget and cancel any pending retry (call after playback recovers or the source changes). */
