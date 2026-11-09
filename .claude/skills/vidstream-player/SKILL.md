@@ -139,6 +139,11 @@ Instructly Media Engine URLs carry the token in the **path** (`/t/{exp}/{nonce}/
 - **Autoplay:** blocked autoplay on a live stream retries muted and shows the `.vp-unmute-pill` ("Tap to unmute"), then emits `autoplayBlocked` / `player-autoplay-blocked` with `{ mutedFallback }`.
 - **SwarmCloud:** `p2p: { enabled, provider: 'swarmcloud', token, trackerZone, channelId, swarmcloud }`.
   - It lazy-loads the optional peer `@swarmcloud/hls`, with `window.P2pEngineHls` as the fallback, and creates it after the token refresher is attached and before `onHlsCreated` / `loadSource`.
+  - `trackerZone` defaults to `'hk'` (Hong Kong). SwarmCloud's own default is `'eu'`; the zones are hk/eu/us/cn, and all viewers of a stream must share one zone.
+  - `p2pUnavailable` / `player-p2p-unavailable` (`reportP2PUnavailable`) fires once per source; the flag resets in `loadSource`. Reasons:
+    - `rejected`: an `exception` with `code` `TRACKER_EXPT` and `retry: false`, or the stats poll seeing `engine.p2pEnabled === false` (code `P2P_DISABLED`), which is SwarmCloud's silent `rejected` reply;
+    - `not-installed`, `unsupported`, `config` (channelId without token) and `error`.
+    The token is redacted from `message`.
   - The default `channelId` is `tokenlessChannelId(url)`, which keeps the host.
   - Stats come from `getStats` (KB → bytes) and `getPeersInfo`. The engine is destroyed in `teardownEngines`.
   - The default provider is still p2p-media-loader.
