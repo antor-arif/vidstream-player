@@ -40,8 +40,11 @@ import { buildHlsConfig, buildP2PCoreConfig, isP2PSupported, resolveLowLatency, 
 import { loadP2PEngine, loadSwarmCloudEngine, P2PStatsTracker } from '../streaming/p2p';
 import { TokenRefresher, redactUrl, tokenlessChannelId } from '../streaming/tokenRefresh';
 import { LiveLifecycle, DEFAULT_LIVE_MESSAGES } from '../streaming/liveLifecycle';
+import { LiveSessionStats } from '../services/liveSessionStats';
+import { applyMediaSession, clearMediaSession, setMediaSessionState, WakeLockController } from '../services/mediaSession';
+import { StatsOverlay, type StatsSnapshot } from './StatsOverlay';
 import type {
-  LatencyEvent, P2PStats, TokenRefreshEvent, LiveState, LiveStateChangeEvent, LiveEdgeChangeEvent, AutoplayBlockedEvent,
+  LatencyEvent, P2PStats, TokenRefreshEvent, LiveState, LiveWatchStats, LiveStateChangeEvent, LiveEdgeChangeEvent, AutoplayBlockedEvent,
 } from '../types';
 
 /** Continuous playback (without stalls/errors) after which the retry budget is refilled */
@@ -247,6 +250,11 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   private pausedLatencyTimer: ReturnType<typeof setInterval> | null = null;
   /** A go-live seek is in flight: latency readings are stale until it lands */
   private liveSeekPending = false;
+  /** Watch-time statistics for the current source (used when it is live) */
+  private liveStats = new LiveSessionStats();
+  private statsOverlay: StatsOverlay | null = null;
+  private wakeLock: WakeLockController | null = null;
+  private mediaSessionActive = false;
 
   constructor(container: HTMLElement | string, config: PlayerConfig) {
     if (typeof container === 'string') {
@@ -315,6 +323,11 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
         this.reportError('STREAM_ENDED', 'The live stream has ended', false);
       },
     }, () => this.config.live, this.listeners.signal);
+    this.wakeLock = new WakeLockController(this.listeners.signal);
+    if (this.config.controls?.stats) {
+      this.statsOverlay = new StatsOverlay(this.container, () => this.readStats());
+      if (this.config.controls.stats === 'visible') this.statsOverlay.show();
+    }
     this.initialChapters = normalizeChapters(this.config.chapters ?? []);
     this.bindContainerEvents();
 
@@ -411,6 +424,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       onPlaylistPrev: () => this.prev(),
       onSeekBy: (seconds) => this.seek(this.state.currentTime + seconds),
       onGoLive: () => this.seekToLive(),
+      onToggleStats: this.config.controls?.stats ? () => this.toggleStats() : undefined,
     };
 
     let controlsConfig = { ...(this.config.controls ?? {}) };
@@ -658,13 +672,18 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       this.emitEvent('player-play', {});
       this.eventBus.emit('play', { currentTime: video.currentTime, src: this.currentSrc(), sessionId: this._sessionId });
       this.analyticsManager?.trackEvent('play', this.getAnalyticsState());
-      this.analyticsManager?.startHeartbeat(() => this.getAnalyticsState());
+      this.analyticsManager?.startHeartbeat(() => this.getAnalyticsState(), () => this.liveAnalyticsData());
+      this.updateMediaSession();
+      setMediaSessionState('playing');
       this.lmsProgressManager?.handleFirstPlay();
       this.startHeartbeat();
     }, opts);
 
     video.addEventListener('pause', () => {
       this.stopHealthyTimer();
+      this.liveStats.onStopped();
+      this.wakeLock?.release();
+      setMediaSessionState('paused');
       if (!video.ended) this.pausedAt = Date.now();
       if (this.isLiveStream()) {
         this.stopPausedLatencyTimer();
@@ -685,6 +704,8 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     }, opts);
 
     video.addEventListener('ended', () => {
+      this.liveStats.onStopped();
+      this.wakeLock?.release();
       this.state.ended = true;
       this.state.playing = false;
       this.updateState();
@@ -766,6 +787,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
 
     video.addEventListener('waiting', () => {
       this.stopHealthyTimer();
+      this.liveStats.onWaiting(video.seeking);
       this.state.buffering = true;
       this.updateState();
       this.emitEvent('player-buffering', { buffering: true });
@@ -782,6 +804,8 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       // Refill the retry budget only after sustained healthy playback: a stream that plays for a second
       // and fails again must not retry forever, but a 2-hour class must survive more than 3 blips
       this.startHealthyTimer();
+      this.liveStats.onPlaying();
+      if (this.isLiveStream() && this.config.live?.wakeLock) void this.wakeLock?.request();
       if (this.liveLifecycle?.isActive()) {
         this.errorRecovery?.stopLiveReconnect();
         this.hideErrorUI();
@@ -1107,6 +1131,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
         const payload: TokenRefreshEvent = { reason, host, sessionId: this._sessionId };
         this.emitEvent('player-token-refreshed', payload);
         this.eventBus.emit('tokenRefreshed', payload);
+        this.liveStats.onTokenRefresh();
         this.analyticsManager?.trackEvent('token_refreshed', this.getAnalyticsState(), { reason });
       },
       onRefreshFailed: ({ reason, error }) => {
@@ -1374,6 +1399,9 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     this.errorRecovery?.setLive(this.config.mode === 'live');
     this.liveLifecycle?.reset();
     this.liveLifecycle?.setActive(this.expectsLive());
+    this.liveStats.onStopped();
+    this.liveStats = new LiveSessionStats();
+    this.lmsProgressManager?.setLiveStats(this.expectsLive() ? this.liveStatsProvider : null);
     this.removeUnmutePill();
     this.pausedAt = 0;
     this.updateState();
@@ -1496,6 +1524,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     this.state.isLive = live;
     this.errorRecovery?.setLive(live || this.config.mode === 'live');
     this.liveLifecycle?.setActive(live || this.expectsLive());
+    this.lmsProgressManager?.setLiveStats(live || this.expectsLive() ? this.liveStatsProvider : null);
     this.controlsManager?.updateLiveState(live || this.config.mode === 'live');
     this.updateState();
   }
@@ -1864,6 +1893,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     if (!snapshot) return;
     this.lastLatencyEmit = now;
     this.lastLatency = snapshot;
+    if (!this.videoElement?.paused) this.liveStats.onLatency(snapshot.latency);
 
     if (snapshot.atLiveEdge !== this.atLiveEdge) {
       this.atLiveEdge = snapshot.atLiveEdge;
@@ -2160,6 +2190,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   }
 
   private onQualityRendered(quality: QualityLevel, auto: boolean): void {
+    this.liveStats.onQualitySwitch();
     const prev = this.state.quality;
     if (prev?.height === quality.height) return;
     this.state.quality = quality;
@@ -2461,6 +2492,89 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     return this.liveLifecycle?.getState() ?? 'idle';
   }
 
+  /** Watch statistics of the current live session (null for VOD) */
+  getLiveStats(): LiveWatchStats | null {
+    return this.isLiveStream() ? this.liveStats.snapshot() : null;
+  }
+
+  /** Show/hide the statistics overlay (requires controls.stats). Returns whether it is now visible. */
+  toggleStats(force?: boolean): boolean {
+    if (!this.statsOverlay) {
+      if (force === false) return false;
+      this.statsOverlay = new StatsOverlay(this.container, () => this.readStats());
+    }
+    const show = force ?? !this.statsOverlay.isVisible();
+    if (show) this.statsOverlay.show();
+    else this.statsOverlay.hide();
+    return show;
+  }
+
+  private liveStatsProvider = (): LiveWatchStats => this.liveStats.snapshot();
+
+  /** Extra analytics / heartbeat data for live sessions (never contains Infinity) */
+  private liveAnalyticsData(): Record<string, unknown> | undefined {
+    if (!this.isLiveStream()) return undefined;
+    const latency = this.lastLatency?.latency;
+    return {
+      live: {
+        ...this.liveStats.snapshot(),
+        latency: typeof latency === 'number' && Number.isFinite(latency) ? Math.round(latency * 100) / 100 : null,
+        liveState: this.getLiveState(),
+      },
+    };
+  }
+
+  private readStats(): StatsSnapshot {
+    const video = this.videoElement;
+    const latency = this.isLiveStream() ? this.measureLatency() : null;
+    let buffer = 0;
+    if (video && video.buffered.length) {
+      for (let i = 0; i < video.buffered.length; i++) {
+        if (video.buffered.start(i) <= video.currentTime + 0.1 && video.buffered.end(i) >= video.currentTime) {
+          buffer = video.buffered.end(i) - video.currentTime;
+        }
+      }
+    }
+    let bitrate: number | null = null;
+    const hls = this.hls;
+    if (hls && hls.levels?.length) {
+      const level = hls.levels[hls.currentLevel >= 0 ? hls.currentLevel : hls.loadLevel];
+      if (level?.bitrate) bitrate = level.bitrate / 1000;
+    } else if (this.state.quality?.bitrate) {
+      bitrate = this.state.quality.bitrate / 1000;
+    }
+    const quality = typeof (video as any)?.getVideoPlaybackQuality === 'function' ? video!.getVideoPlaybackQuality() : null;
+    const p2p = this.getP2PStats();
+    return {
+      latency: latency?.latency ?? null,
+      targetLatency: latency?.targetLatency ?? null,
+      buffer: Math.max(0, buffer),
+      resolution: video && video.videoWidth ? `${video.videoWidth}×${video.videoHeight}` : null,
+      bitrateKbps: bitrate,
+      droppedFrames: quality ? quality.droppedVideoFrames : null,
+      totalFrames: quality ? quality.totalVideoFrames : null,
+      p2pRatio: p2p ? p2p.p2pRatio : null,
+      peers: p2p ? p2p.peers : null,
+      liveState: this.liveLifecycle?.isActive() ? this.getLiveState() : null,
+    };
+  }
+
+  /** OS media controls for the source that is playing */
+  private updateMediaSession(): void {
+    if (this.config.mediaSession === false) return;
+    const source = this.config.source;
+    applyMediaSession(
+      { title: source.title, artwork: source.poster, live: this.isLiveStream() },
+      {
+        play: () => { void this.play(); },
+        pause: () => this.pause(),
+        seekBy: (seconds) => { if (!this.isLiveStream()) this.seek(this.state.currentTime + seconds); },
+        seekTo: (time) => { if (!this.isLiveStream()) this.seek(time); },
+      }
+    );
+    this.mediaSessionActive = true;
+  }
+
   /**
    * Native HLS (no hls.js): distance from the end of the seekable window to start at —
    * 3 × target duration for regular HLS (as hls.js), the configured target for low latency.
@@ -2521,7 +2635,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   private getAnalyticsState() {
     return {
       currentTime: this.state.currentTime,
-      duration: this.state.duration,
+      duration: Number.isFinite(this.state.duration) ? this.state.duration : 0,
       volume: this.state.volume,
       muted: this.state.muted,
       playbackRate: this.state.playbackRate,
@@ -2533,7 +2647,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   private startHeartbeat(): void {
     this.stopHeartbeat();
     const interval = this.config.analytics?.heartbeatInterval ?? 30000;
-    this.heartbeatTimer = setInterval(() => this.emitEvent('player-heartbeat', {}), interval);
+    this.heartbeatTimer = setInterval(() => this.emitEvent('player-heartbeat', this.liveAnalyticsData() ?? {}), interval);
   }
 
   private stopHeartbeat(): void {
@@ -2749,6 +2863,14 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     this.liveLifecycle?.destroy();
     this.liveLifecycle = null;
     this.removeUnmutePill();
+    this.liveStats.onStopped();
+    this.statsOverlay?.destroy();
+    this.statsOverlay = null;
+    this.wakeLock?.release();
+    if (this.mediaSessionActive) {
+      clearMediaSession();
+      this.mediaSessionActive = false;
+    }
 
     if (this.videoElement) {
       this.videoElement.pause();

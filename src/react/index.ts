@@ -59,4 +59,5 @@ export type {
   LiveEdgeChangeEvent,
   AutoplayBlockedEvent,
   P2PProvider,
+  LiveWatchStats,
 } from '../types';

@@ -149,6 +149,7 @@ export type {
   LiveEdgeChangeEvent,
   AutoplayBlockedEvent,
   P2PProvider,
+  LiveWatchStats,
 
   // Utilities
   DeepPartial,
@@ -170,3 +171,7 @@ export {
   tokenlessChannelId,
 } from './streaming/tokenRefresh';
 export type { TokenRefreshOptions } from './streaming/tokenRefresh';
+
+// Live session helpers
+export { LiveSessionStats } from './services/liveSessionStats';
+export { StatsOverlay } from './components/StatsOverlay';

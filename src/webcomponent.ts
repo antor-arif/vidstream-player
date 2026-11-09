@@ -37,6 +37,7 @@ import type {
   P2PStats,
   LiveConfig,
   LiveState,
+  LiveWatchStats,
   LatencyEvent,
 } from './types';
 
@@ -672,6 +673,10 @@ export class VideoPlayerElement extends SSRHTMLElement {
   /** Show the "ended" state (e.g. after a stream.ended push from your backend) */
   markStreamEnded(): void { this.player?.markStreamEnded(); }
   getLiveState(): LiveState { return this.player?.getLiveState() ?? 'idle'; }
+  /** Watch statistics of the live session (null for VOD) */
+  getLiveStats(): LiveWatchStats | null { return this.player?.getLiveStats() ?? null; }
+  /** Show/hide the statistics overlay; returns whether it is visible */
+  toggleStats(force?: boolean): boolean { return this.player?.toggleStats(force) ?? false; }
 
   // ============================================================================
   // CONVENIENCE PROPERTIES

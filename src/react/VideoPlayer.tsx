@@ -39,6 +39,7 @@ import type {
   LiveConfig,
   TokenRefreshEvent,
   LiveState,
+  LiveWatchStats,
   LiveStateChangeEvent,
   LiveEdgeChangeEvent,
   AutoplayBlockedEvent,
@@ -100,6 +101,8 @@ export interface VideoPlayerProps {
   live?: LiveConfig;
   /** Extra hls.js config. Changing it rebuilds the HLS engine. */
   hlsConfig?: Record<string, any>;
+  /** OS media controls (lock screen / notification). Default: true */
+  mediaSession?: boolean;
   /** Called with each hls.js instance before it loads (e.g. to attach a P2P engine) */
   onHlsCreated?: (hls: any, Hls: any) => void;
 
@@ -173,6 +176,10 @@ export interface VideoPlayerRef extends PlayerAPI {
   /** Show the "ended" state (e.g. after a stream.ended push from your backend) */
   markStreamEnded(): void;
   getLiveState(): LiveState;
+  /** Watch statistics of the live session (null for VOD) */
+  getLiveStats(): LiveWatchStats | null;
+  /** Show/hide the statistics overlay; returns whether it is visible */
+  toggleStats(force?: boolean): boolean;
   // Element access
   getElement(): VideoPlayerElement | null;
 }
@@ -190,7 +197,7 @@ const SYNCED_KEYS = [
   'subtitles', 'chapters', 'autoplay', 'muted', 'loop', 'preload', 'keyboardShortcuts',
   'playbackRate', 'debug', 'gestures', 'errorRecovery', 'pip', 'miniPlayer',
   'playlist', 'playlistOptions', 'thumbnailVtt', 'chaptersVtt', 'lowLatency', 'p2p',
-  'live', 'hlsConfig',
+  'live', 'hlsConfig', 'mediaSession',
 ] as const;
 
 type SyncedConfig = Partial<Pick<PlayerConfig, typeof SYNCED_KEYS[number]>>;
@@ -231,6 +238,7 @@ function buildConfig(props: VideoPlayerProps): PlayerConfig {
     p2p: props.p2p,
     live: props.live,
     hlsConfig: props.hlsConfig,
+    mediaSession: props.mediaSession,
   };
 }
 
@@ -422,6 +430,8 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
         goToLive: () => elementRef.current?.goToLive(),
         markStreamEnded: () => elementRef.current?.markStreamEnded(),
         getLiveState: () => elementRef.current?.getLiveState() ?? 'idle',
+        getLiveStats: () => elementRef.current?.getLiveStats() ?? null,
+        toggleStats: (force?: boolean) => elementRef.current?.toggleStats(force) ?? false,
         // Element
         getElement: () => elementRef.current,
       }),

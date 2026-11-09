@@ -128,6 +128,11 @@ export interface ControlsConfig {
   liveIndicator?: boolean;
   /** Reserved for a future settings menu — currently has no effect */
   settings?: boolean;
+  /**
+   * Playback statistics overlay (latency, buffer, bitrate/resolution, dropped frames, P2P) for support.
+   * true = available via player.toggleStats() and the `i` key; 'visible' = also shown at start. Default: false
+   */
+  stats?: boolean | 'visible';
   chapters?: boolean;
   /** Seconds skipped by the rewind/forward buttons and arrow keys. Default: 10 */
   seekDuration?: number;
@@ -570,12 +575,35 @@ export interface LMSProgressData {
   videoId: string;
   userId?: string;
   currentTime: number;
+  /** 0 for live streams (never Infinity) */
   duration: number;
+  /** Always 0 for live streams (no fixed duration) — use watchedSeconds */
   watchedPercentage: number;
   milestonesReached: ProgressMilestone[];
   hasStarted: boolean;
   isCompleted: boolean;
   lastUpdated: string;
+  /** Live streams: true */
+  isLive?: boolean;
+  /** Live streams: seconds actually played (excludes pauses and rebuffering) */
+  watchedSeconds?: number;
+  /** Live streams: first frame (ISO time) */
+  joinedAt?: string | null;
+  /** Live streams: last moment the viewer was watching (ISO time) */
+  lastSeenAt?: string | null;
+}
+
+/** Live session watch statistics (LMS `onProgressSave`, analytics heartbeats, `getLiveStats()`) */
+export interface LiveWatchStats {
+  watchedSeconds: number;
+  joinedAt: string | null;
+  lastSeenAt: string | null;
+  rebufferCount: number;
+  rebufferSeconds: number;
+  /** Average seconds behind live, or null before the first sample */
+  averageLatency: number | null;
+  qualitySwitches: number;
+  tokenRefreshes: number;
 }
 
 export interface LMSProgressConfig {
@@ -719,6 +747,11 @@ export interface PlayerConfig {
    * settings are applied last; a custom `xhrSetup` here still runs (after the URL swap).
    */
   hlsConfig?: Record<string, any>;
+  /**
+   * OS media controls (lock screen / notification): title + poster artwork, play/pause; seeking only
+   * for VOD. Default: true
+   */
+  mediaSession?: boolean;
   /**
    * Called with every hls.js instance right after `new Hls()` and before `loadSource`/`attachMedia`
    * (e.g. to attach a P2P engine). `Hls` is the hls.js class. Also emitted as bus event `hlsCreated`.
@@ -890,6 +923,8 @@ export interface VidstreamPlayerInstance {
   markStreamEnded(): void;
   /** Current live lifecycle state */
   getLiveState(): LiveState;
+  /** Watch statistics of the current live session, or null for VOD */
+  getLiveStats(): LiveWatchStats | null;
   /** Current live latency snapshot, or null when not playing a live HLS stream */
   getLiveLatency(): LatencyEvent | null;
   /** P2P traffic snapshot, or null when P2P is not active */
