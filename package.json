@@ -85,6 +85,7 @@
   "author": "Md. Arifur Rahman",
   "license": "MIT",
   "devDependencies": {
+    "@swarmcloud/hls": "^2.18.0",
     "@types/node": "^20.10.0",
     "@types/react": "^18.2.45",
     "@types/react-dom": "^18.2.18",
@@ -105,9 +106,10 @@
   "peerDependencies": {
     "dashjs": ">=4.0.0",
     "hls.js": ">=1.6.0",
+    "p2p-media-loader-hlsjs": ">=4.0.0",
     "react": ">=17.0.0",
     "react-dom": ">=17.0.0",
-    "p2p-media-loader-hlsjs": ">=4.0.0"
+    "@swarmcloud/hls": ">=2.0.0"
   },
   "peerDependenciesMeta": {
     "dashjs": {
@@ -123,6 +125,9 @@
       "optional": true
     },
     "p2p-media-loader-hlsjs": {
+      "optional": true
+    },
+    "@swarmcloud/hls": {
       "optional": true
     }
   },

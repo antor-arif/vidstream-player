@@ -21,7 +21,7 @@ const entries = {
 };
 
 // Optional peers — loaded by the consumer's bundler (or as globals with the UMD build), never bundled
-const external = ['react', 'react-dom', 'react/jsx-runtime', 'hls.js', 'dashjs', 'p2p-media-loader-hlsjs', 'p2p-media-loader-core'];
+const external = ['react', 'react-dom', 'react/jsx-runtime', 'hls.js', 'dashjs', 'p2p-media-loader-hlsjs', 'p2p-media-loader-core', '@swarmcloud/hls'];
 
 function prependUseClient(file) {
   if (!fs.existsSync(file)) return;
@@ -133,6 +133,7 @@ async function runBuild() {
             'dashjs': 'dashjs',
             'p2p-media-loader-hlsjs': 'p2pml.hlsjs',
             'p2p-media-loader-core': 'p2pml.core',
+            '@swarmcloud/hls': 'P2pEngineHls',
           },
           exports: 'named',
         },

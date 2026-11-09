@@ -17,9 +17,25 @@ export function loadP2PEngine(): Promise<any | null> {
   return p2pPromise;
 }
 
+let swarmPromise: Promise<any | null> | null = null;
+
+/**
+ * Resolve SwarmCloud's P2pEngineHls: ESM import of the optional peer `@swarmcloud/hls`, falling back
+ * to the CDN global (`window.P2pEngineHls`). Resolves null when unavailable.
+ */
+export function loadSwarmCloudEngine(): Promise<any | null> {
+  if (!swarmPromise) {
+    swarmPromise = import('@swarmcloud/hls')
+      .then(mod => (mod as any).default ?? (mod as any).P2pEngineHls ?? null)
+      .catch(() => (globalThis as any).P2pEngineHls ?? null);
+  }
+  return swarmPromise;
+}
+
 /** Test hook: forget the cached module resolution */
 export function resetP2PEngineCache(): void {
   p2pPromise = null;
+  swarmPromise = null;
 }
 
 /** Accumulates p2p-media-loader core events into a P2PStats snapshot */
@@ -32,6 +48,8 @@ export class P2PStatsTracker {
   private safeMode = false;
   /** Bytes of every fragment hls.js loaded, whichever path it came by */
   private fragmentBytes = 0;
+  /** Peer count reported by engines that don't emit connect/close events (SwarmCloud) */
+  private reportedPeers: number | null = null;
 
   constructor(private readonly sessionId: string) {}
 
@@ -85,6 +103,17 @@ export class P2PStatsTracker {
     if (bytes > 0) this.fragmentBytes += bytes;
   }
 
+  /** Engines that report running totals (SwarmCloud getStats) */
+  setTotals(totals: { httpBytes: number; p2pBytes: number; uploadedBytes: number }): void {
+    this.httpBytes = Math.max(0, totals.httpBytes);
+    this.p2pBytes = Math.max(0, totals.p2pBytes);
+    this.uploadedBytes = Math.max(0, totals.uploadedBytes);
+  }
+
+  setPeerCount(count: number): void {
+    this.reportedPeers = Math.max(0, count);
+  }
+
   /** Stall guard engaged: P2P switched to fast HTTP fallback */
   setSafeMode(): void {
     this.safeMode = true;
@@ -101,7 +130,7 @@ export class P2PStatsTracker {
       httpBytes,
       p2pBytes: this.p2pBytes,
       uploadedBytes: this.uploadedBytes,
-      peers: this.peers.size,
+      peers: this.reportedPeers ?? this.peers.size,
       p2pRatio: total > 0 ? this.p2pBytes / total : 0,
       safeMode: this.safeMode,
       sessionId: this.sessionId,
