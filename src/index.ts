@@ -140,6 +140,9 @@ export type {
   P2PStrategy,
   P2PStats,
   LatencyEvent,
+  LiveConfig,
+  LiveLatencyMode,
+  TokenRefreshEvent,
 
   // Utilities
   DeepPartial,
@@ -151,3 +154,13 @@ export type {
 
 /** Package version, injected from package.json at build time */
 export { VERSION } from './version';
+
+// Signed / IP-bound URL helpers (token prefix in the URL path)
+export {
+  TokenRefresher,
+  DEFAULT_TOKEN_PREFIX,
+  splitTokenUrl,
+  redactUrl,
+  tokenlessChannelId,
+} from './streaming/tokenRefresh';
+export type { TokenRefreshOptions } from './streaming/tokenRefresh';

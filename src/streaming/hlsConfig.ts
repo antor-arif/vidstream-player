@@ -1,7 +1,7 @@
 // Pure builders for the hls.js and p2p-media-loader configuration.
 // Kept free of DOM/engine state so every rule here is unit-testable.
 
-import type { LowLatencyConfig, P2PConfig, P2PStrategy } from '../types';
+import type { LiveLatencyMode, LowLatencyConfig, P2PConfig, P2PStrategy } from '../types';
 
 export interface ResolvedLowLatency {
   targetLatency: number;
@@ -47,13 +47,20 @@ export function resolveLowLatency(
 
 export interface HlsConfigOptions {
   lowLatency: ResolvedLowLatency | null;
+  /** `live.latencyMode` — takes priority over `lowLatency` when set */
+  latencyMode?: LiveLatencyMode;
   /** P2P is active for this load */
   p2p: boolean;
   strategy: P2PStrategy;
-  xhrSetup: (xhr: XMLHttpRequest, url: string) => void;
+  xhrSetup: (xhr: XMLHttpRequest, url: string) => void | Promise<void>;
+  /** `config.hlsConfig`, merged over everything the player sets */
+  userConfig?: Record<string, unknown>;
 }
 
-/** hls.js config for one source load */
+/** Live HLS keeps at most this many seconds behind the playhead (hls.js default: Infinity) */
+export const LIVE_BACK_BUFFER_SECONDS = 30;
+
+/** hls.js config for one source load (before token-refresh settings, which the player applies last) */
 export function buildHlsConfig(opts: HlsConfigOptions): Record<string, unknown> {
   const config: Record<string, unknown> = {
     enableWorker: true,
@@ -61,7 +68,21 @@ export function buildHlsConfig(opts: HlsConfigOptions): Record<string, unknown> 
   };
 
   const ll = opts.lowLatency;
-  if (ll) {
+  if (opts.latencyMode === 'low') {
+    // LL-HLS: never set liveSync* — it overrides PART-HOLD-BACK targeting (measured 9.5 s instead of 1.5 s)
+    Object.assign(config, {
+      lowLatencyMode: true,
+      maxLiveSyncPlaybackRate: 1.1,
+      backBufferLength: LIVE_BACK_BUFFER_SECONDS,
+    });
+  } else if (opts.latencyMode === 'standard') {
+    Object.assign(config, {
+      lowLatencyMode: false,
+      liveSyncDurationCount: 3,
+      liveMaxLatencyDurationCount: 10,
+      backBufferLength: LIVE_BACK_BUFFER_SECONDS,
+    });
+  } else if (ll) {
     Object.assign(config, {
       lowLatencyMode: ll.partLoading,
       liveSyncDuration: ll.targetLatency,
@@ -70,7 +91,7 @@ export function buildHlsConfig(opts: HlsConfigOptions): Record<string, unknown> 
       // Recover from a stall by easing the target back gradually instead of a full segment
       liveSyncOnStallIncrease: 0.5,
       // Live viewers rarely seek back far; keep memory bounded on long sessions
-      backBufferLength: 30,
+      backBufferLength: LIVE_BACK_BUFFER_SECONDS,
     });
   } else {
     config.lowLatencyMode = true;
@@ -78,6 +99,16 @@ export function buildHlsConfig(opts: HlsConfigOptions): Record<string, unknown> 
     // set explicitly. Under the latency strategy keep hls.js's standard 3-segment hold-back.
     if (opts.p2p && opts.strategy === 'latency') {
       config.liveSyncDurationCount = 3;
+    }
+  }
+
+  const user = opts.userConfig;
+  if (user) {
+    for (const [key, value] of Object.entries(user)) {
+      if (value === undefined) continue;
+      // The player's xhrSetup (auth header, token swap) wraps the user's — see VideoPlayer.createHls
+      if (key === 'xhrSetup') continue;
+      config[key] = value;
     }
   }
 

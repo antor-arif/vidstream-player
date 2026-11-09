@@ -36,6 +36,8 @@ import type {
   LowLatencyConfig,
   P2PConfig,
   P2PStats,
+  LiveConfig,
+  TokenRefreshEvent,
   LatencyEvent,
 } from '../types';
 import { VideoPlayerElement, registerVideoPlayerElement } from '../webcomponent';
@@ -90,6 +92,12 @@ export interface VideoPlayerProps {
   lowLatency?: boolean | LowLatencyConfig;
   /** P2P HLS delivery. Changing it rebuilds the HLS engine. */
   p2p?: P2PConfig;
+  /** Live options (`latencyMode`, …). Changing it rebuilds the HLS engine. */
+  live?: LiveConfig;
+  /** Extra hls.js config. Changing it rebuilds the HLS engine. */
+  hlsConfig?: Record<string, any>;
+  /** Called with each hls.js instance before it loads (e.g. to attach a P2P engine) */
+  onHlsCreated?: (hls: any, Hls: any) => void;
 
   className?: string;
   style?: React.CSSProperties;
@@ -115,6 +123,10 @@ export interface VideoPlayerProps {
   onLatency?: (latency: LatencyEvent) => void;
   /** About every 2 seconds while P2P is active */
   onP2PStats?: (stats: P2PStats) => void;
+  /** A fresh signed URL / token was applied */
+  onTokenRefreshed?: (event: TokenRefreshEvent) => void;
+  /** Getting a fresh signed URL / token failed */
+  onTokenRefreshFailed?: (event: TokenRefreshEvent) => void;
 }
 
 export interface VideoPlayerRef extends PlayerAPI {
@@ -136,6 +148,14 @@ export interface VideoPlayerRef extends PlayerAPI {
   // Setters
   setMuted(muted: boolean): void;
   setSpeed(rate: number): void;
+  // Live
+  seekToLive(): void;
+  getLiveLatency(): LatencyEvent | null;
+  getP2PStats(): P2PStats | null;
+  /** Active hls.js instance, or null */
+  getHls(): any;
+  /** Active dash.js MediaPlayer, or null */
+  getDash(): any;
   // Element access
   getElement(): VideoPlayerElement | null;
 }
@@ -153,6 +173,7 @@ const SYNCED_KEYS = [
   'subtitles', 'chapters', 'autoplay', 'muted', 'loop', 'preload', 'keyboardShortcuts',
   'playbackRate', 'debug', 'gestures', 'errorRecovery', 'pip', 'miniPlayer',
   'playlist', 'playlistOptions', 'thumbnailVtt', 'chaptersVtt', 'lowLatency', 'p2p',
+  'live', 'hlsConfig',
 ] as const;
 
 type SyncedConfig = Partial<Pick<PlayerConfig, typeof SYNCED_KEYS[number]>>;
@@ -191,6 +212,8 @@ function buildConfig(props: VideoPlayerProps): PlayerConfig {
     plugins: props.plugins,
     lowLatency: props.lowLatency,
     p2p: props.p2p,
+    live: props.live,
+    hlsConfig: props.hlsConfig,
   };
 }
 
@@ -271,6 +294,8 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
         'player-playlist-change': call((p, e) => p.onPlaylistChange?.(e)),
         'player-latency': call((p, e) => p.onLatency?.(e.detail?.data)),
         'player-p2p-stats': call((p, e) => p.onP2PStats?.(e.detail?.data)),
+        'player-token-refreshed': call((p, e) => p.onTokenRefreshed?.(e.detail?.data)),
+        'player-token-refresh-failed': call((p, e) => p.onTokenRefreshFailed?.(e.detail?.data)),
         'player-loaded': call(() => {}),
         'player-ratechange': call(() => {}),
       };
@@ -280,6 +305,8 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
       // StrictMode re-runs this effect on the same element; the element keeps its player
       if (!element.isReady()) {
         const config = buildConfig(propsRef.current);
+        // Always the latest prop (read when an hls.js instance is created)
+        config.onHlsCreated = (hls: any, Hls: any) => propsRef.current.onHlsCreated?.(hls, Hls);
         element.initialize(config);
         lastSynced.current = pickSynced(config);
         lastSourceKey.current = sourceKey(config.source);
@@ -365,6 +392,12 @@ export const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(
         // Setters
         setMuted: (m: boolean) => elementRef.current?.setMuted(m),
         setSpeed: (rate: number) => elementRef.current?.setSpeed(rate),
+        // Live
+        seekToLive: () => elementRef.current?.seekToLive(),
+        getLiveLatency: () => elementRef.current?.getLiveLatency() ?? null,
+        getP2PStats: () => elementRef.current?.getP2PStats() ?? null,
+        getHls: () => elementRef.current?.getHls() ?? null,
+        getDash: () => elementRef.current?.getDash() ?? null,
         // Element
         getElement: () => elementRef.current,
       }),

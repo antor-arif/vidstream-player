@@ -178,6 +178,13 @@ export interface ErrorRecoveryConfig {
   maxRetries?: number;
   /** Default: 2000ms */
   retryDelay?: number;
+  /** Upper bound for the exponential backoff. Default: 30000ms */
+  maxRetryDelay?: number;
+  /**
+   * Retry budget while playing a live stream. Default: 10. Retries never run out while the
+   * browser is offline (`navigator.onLine === false`).
+   */
+  liveMaxRetries?: number;
   onError?: (error: VidstreamError) => void;
 }
 
@@ -253,6 +260,21 @@ export interface P2PConfig {
   core?: Record<string, unknown>;
 }
 
+/**
+ * Live latency preset (takes priority over `lowLatency` when set):
+ * - 'standard': regular HLS (e.g. 3 s TS segments): `lowLatencyMode: false`, `liveSyncDurationCount: 3`
+ *   (~3 segments behind live), `liveMaxLatencyDurationCount: 10`.
+ * - 'low': LL-HLS (EXT-X-PART): `lowLatencyMode: true`, `maxLiveSyncPlaybackRate: 1.1` and **no**
+ *   `liveSync*` settings, so hls.js follows the playlist's PART-HOLD-BACK (~1.5 s with 0.5 s parts).
+ */
+export type LiveLatencyMode = 'standard' | 'low';
+
+/** Live streaming options */
+export interface LiveConfig {
+  /** Default: not set (falls back to `lowLatency`, then the player defaults) */
+  latencyMode?: LiveLatencyMode;
+}
+
 /** Snapshot of P2P traffic for the current source */
 export interface P2PStats {
   /** Bytes downloaded from the CDN/origin */
@@ -267,6 +289,17 @@ export interface P2PStats {
   p2pRatio: number;
   /** True after repeated stalls switched P2P to fast HTTP fallback for the rest of this source */
   safeMode: boolean;
+  sessionId: string;
+}
+
+/** `tokenRefreshed` / `tokenRefreshFailed` payload. Never contains the token. */
+export interface TokenRefreshEvent {
+  /** What triggered it: '403', '401', 'fatal', 'native', 'manual', … */
+  reason: string;
+  /** Host the token is for (refreshed) */
+  host?: string | null;
+  /** Error message (failed) */
+  error?: string;
   sessionId: string;
 }
 
@@ -413,7 +446,8 @@ export type AnalyticsEventName =
   | 'session_start'
   | 'session_end'
   | 'milestone_reached'
-  | 'progress_saved';
+  | 'progress_saved'
+  | 'token_refreshed';
 
 export interface AnalyticsEventPayload {
   eventName: AnalyticsEventName;
@@ -492,10 +526,29 @@ export interface SecurityConfig {
   /** Called with every source URL before it is loaded; resolve to the signed URL to play */
   getSignedPlaybackUrl?: (originalUrl: string) => Promise<string>;
   /**
-   * Called once when a manifest/segment request is rejected (HTTP 401/403) or signing fails.
-   * Resolve to a new token; playback is then retried with it.
+   * Called when a manifest/segment request is rejected (HTTP 401/403) or signing fails.
+   *
+   * - Resolve to a **full fresh playback URL** (`https://…`) for path-signed / IP-bound URLs
+   *   (`/t/{exp}/{nonce}/{sig}/…`, Bunny `/bcdn_token=…/…`). It MUST be for the **same stream on the
+   *   same host** (same edge / same Bunny pull zone): hosts number segments differently. The player
+   *   swaps only the token part of every URL in place, so HLS playback continues without a reload.
+   * - Or resolve to a bare token (not a URL): it replaces `authToken` for the auth header.
+   *
+   * HLS via hls.js: called at most once per 403 burst and at most 4 times per minute.
+   * Other engines: called once per failure.
    */
   refreshPlaybackToken?: () => Promise<string>;
+  /**
+   * Explicit form of the URL refresh above: resolve to a full fresh URL for the same stream and host.
+   * Takes precedence over `refreshPlaybackToken` for URL refreshes.
+   */
+  refreshPlaybackUrl?: () => Promise<string>;
+  /**
+   * Pattern that finds the token prefix in a URL **path**. Group 1 = token prefix, group 2 = the rest of
+   * the path. Default matches `/t/{exp}/{nonce}/{sig}` and `/bcdn_token=…`:
+   * `^(/t/\d+/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+|/bcdn_token=[^/]*)(/.*)$`
+   */
+  tokenPrefixPattern?: RegExp;
   /** Called when playback authorization fails and cannot be recovered */
   onPlaybackAuthorizationError?: (error: Error) => void | Promise<void>;
   /**
@@ -585,6 +638,18 @@ export interface PlayerConfig {
   lowLatency?: boolean | LowLatencyConfig;
   /** Peer-to-peer HLS delivery (requires `p2p-media-loader-hlsjs` and hls.js ≥ 1.5) */
   p2p?: P2PConfig;
+  /** Live streaming options (latency preset, …) */
+  live?: LiveConfig;
+  /**
+   * Extra hls.js config, merged over the player's defaults and latency settings. Token-refresh
+   * settings are applied last; a custom `xhrSetup` here still runs (after the URL swap).
+   */
+  hlsConfig?: Record<string, any>;
+  /**
+   * Called with every hls.js instance right after `new Hls()` and before `loadSource`/`attachMedia`
+   * (e.g. to attach a P2P engine). `Hls` is the hls.js class. Also emitted as bus event `hlsCreated`.
+   */
+  onHlsCreated?: (hls: any, Hls: any) => void;
   autoplay?: boolean;
   muted?: boolean;
   loop?: boolean;
@@ -666,6 +731,12 @@ export interface PlayerEvents {
   'player-latency': PlayerEventDetail<LatencyEvent>;
   /** About every 2 seconds while P2P is active */
   'player-p2p-stats': PlayerEventDetail<P2PStats>;
+  /** A fresh signed URL / token was obtained and applied */
+  'player-token-refreshed': PlayerEventDetail<TokenRefreshEvent>;
+  /** Getting a fresh signed URL / token failed */
+  'player-token-refresh-failed': PlayerEventDetail<TokenRefreshEvent>;
+  /** hls.js instance created (before loadSource/attachMedia) */
+  'player-hls-created': PlayerEventDetail<{ hls: any }>;
 }
 
 // ============================================================================
@@ -735,6 +806,10 @@ export interface VidstreamPlayerInstance {
   getLiveLatency(): LatencyEvent | null;
   /** P2P traffic snapshot, or null when P2P is not active */
   getP2PStats(): P2PStats | null;
+  /** The active hls.js instance, or null */
+  getHls(): any;
+  /** The active dash.js MediaPlayer, or null */
+  getDash(): any;
 
   // Identity
   readonly sessionId: string;

@@ -50,4 +50,7 @@ export type {
   P2PConfig,
   P2PStats,
   LatencyEvent,
+  LiveConfig,
+  LiveLatencyMode,
+  TokenRefreshEvent,
 } from '../types';

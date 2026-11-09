@@ -36,9 +36,16 @@ import { MiniPlayer, miniPlayerStyles } from './MiniPlayer';
 import { PlaylistManager, playlistStyles } from './PlaylistManager';
 import { parseChaptersVtt } from '../utils/vtt';
 import { isDomainAllowed } from '../utils/security';
-import { buildHlsConfig, buildP2PCoreConfig, isP2PSupported, resolveLowLatency } from '../streaming/hlsConfig';
+import { buildHlsConfig, buildP2PCoreConfig, isP2PSupported, resolveLowLatency, LIVE_BACK_BUFFER_SECONDS } from '../streaming/hlsConfig';
 import { loadP2PEngine, P2PStatsTracker } from '../streaming/p2p';
-import type { LatencyEvent, P2PStats } from '../types';
+import { TokenRefresher, redactUrl } from '../streaming/tokenRefresh';
+import type { LatencyEvent, P2PStats, TokenRefreshEvent } from '../types';
+
+/** Continuous playback (without stalls/errors) after which the retry budget is refilled */
+const HEALTHY_PLAYBACK_MS = 10000;
+
+/** Retry policies without token refresh (status 0 / timeouts retried, 401/403 not) */
+const NO_REFRESH = new TokenRefresher({ getFreshUrl: async () => null, maxRefreshesPerMinute: 0 });
 
 // Lazy-loaded streaming engines — not bundled into the main entry.
 // When the import fails (peer dependency not installed, or the UMD build loaded from a
@@ -218,6 +225,13 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   private p2pStallTimes: number[] = [];
   private p2pStartedAt = 0;
 
+  // Signed / IP-bound URLs — one refresher per loaded source, shared by every engine rebuild
+  private tokenRefresher: TokenRefresher | null = null;
+  /** URL currently set on the <video> for native HLS (Safari/iOS) */
+  private nativeHlsSrc: string | null = null;
+  private nativeRefreshInFlight = false;
+  private healthyTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor(container: HTMLElement | string, config: PlayerConfig) {
     if (typeof container === 'string') {
       const el = document.querySelector(container);
@@ -268,6 +282,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     }
 
     this.errorRecovery = new ErrorRecoveryManager(this.config.errorRecovery);
+    this.errorRecovery.setLive(this.config.mode === 'live');
     this.authToken = this.config.security?.authToken;
     this.initialChapters = normalizeChapters(this.config.chapters ?? []);
     this.bindContainerEvents();
@@ -611,6 +626,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     }, opts);
 
     video.addEventListener('pause', () => {
+      this.stopHealthyTimer();
       this.state.playing = false;
       this.state.paused = true;
       this.container.classList.remove('vp-playing');
@@ -703,6 +719,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     }, opts);
 
     video.addEventListener('waiting', () => {
+      this.stopHealthyTimer();
       this.state.buffering = true;
       this.updateState();
       this.emitEvent('player-buffering', { buffering: true });
@@ -715,12 +732,14 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       this.state.buffering = false;
       this.updateState();
       this.emitEvent('player-buffering', { buffering: false });
-      // Playback is healthy again — refill the retry budget for the next failure
-      this.errorRecovery?.resetRetries();
-      this.mediaErrorRecoveries = 0;
-      this.authRefreshAttempted = false;
       if (this.state.error && !this.state.error.fatal) this.state.error = undefined;
+      // Refill the retry budget only after sustained healthy playback: a stream that plays for a second
+      // and fails again must not retry forever, but a 2-hour class must survive more than 3 blips
+      this.startHealthyTimer();
     }, opts);
+
+    // Native HLS (Safari/iOS): a stall may be an expired / IP-bound URL that the browser won't report
+    video.addEventListener('stalled', () => this.checkNativeHlsAuth('stalled'), opts);
 
     video.addEventListener('progress', () => {
       if (video.buffered.length > 0) {
@@ -916,6 +935,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     originalError?: unknown
   ): void {
     const recovery = this.errorRecovery;
+    this.stopHealthyTimer();
     if (retry && recovery?.canRetry()) {
       this.reportError(code, message, false, originalError);
       recovery.scheduleRetry(retry);
@@ -945,6 +965,12 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     // Aborted loads and the "empty src" error raised while tearing down are not playback failures
     if (!mediaError || mediaError.code === 1 || (!video.currentSrc && !video.getAttribute('src'))) return;
 
+    // Native HLS with a signed URL: the error may be a 403 (expired token / new IP) — refresh and rejoin
+    if (this.nativeHlsSrc && this.tokenRefresher && mediaError.code !== 4) {
+      void this.recoverNativeHls('error', true);
+      return;
+    }
+
     const code: VidstreamErrorCode =
       mediaError.code === 2 ? 'NETWORK_ERROR' :
       mediaError.code === 3 ? 'DECODE_ERROR' :
@@ -955,6 +981,113 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       'This video format is not supported'
     );
     this.handlePlaybackFailure(code, message, code === 'SRC_NOT_SUPPORTED' ? null : () => this.restartPlayback(), mediaError);
+  }
+
+  private startHealthyTimer(): void {
+    this.stopHealthyTimer();
+    this.healthyTimer = setTimeout(() => {
+      this.healthyTimer = null;
+      this.errorRecovery?.resetCount();
+      this.mediaErrorRecoveries = 0;
+      this.authRefreshAttempted = false;
+    }, HEALTHY_PLAYBACK_MS);
+  }
+
+  private stopHealthyTimer(): void {
+    if (this.healthyTimer) {
+      clearTimeout(this.healthyTimer);
+      this.healthyTimer = null;
+    }
+  }
+
+  // ============================================================================
+  // SIGNED / IP-BOUND URL REFRESH
+  // ============================================================================
+
+  /** A fresh-URL / token refresher is configured */
+  private hasPlaybackRefresher(): boolean {
+    const security = this.config.security;
+    return !!(security?.refreshPlaybackUrl || security?.refreshPlaybackToken);
+  }
+
+  /**
+   * Fresh playback URL from the app (same stream, same host), or null when only the auth header token
+   * was refreshed (`refreshPlaybackToken` resolved to a bare token).
+   */
+  private getFreshPlaybackUrl = async (): Promise<string | null> => {
+    const security = this.config.security;
+    if (security?.refreshPlaybackUrl) return await security.refreshPlaybackUrl();
+    if (security?.refreshPlaybackToken) {
+      const value = await security.refreshPlaybackToken();
+      if (typeof value === 'string' && /^https?:\/\//i.test(value.trim())) return value.trim();
+      this.authToken = value;
+      return null;
+    }
+    return null;
+  };
+
+  private createTokenRefresher(): TokenRefresher {
+    const debug = !!this.config.debug;
+    return new TokenRefresher({
+      getFreshUrl: this.getFreshPlaybackUrl,
+      pattern: this.config.security?.tokenPrefixPattern,
+      log: debug ? (message) => console.log(`[VideoPlayer] ${message}`) : undefined,
+      onRefreshed: ({ reason, host }) => {
+        const payload: TokenRefreshEvent = { reason, host, sessionId: this._sessionId };
+        this.emitEvent('player-token-refreshed', payload);
+        this.eventBus.emit('tokenRefreshed', payload);
+        this.analyticsManager?.trackEvent('token_refreshed', this.getAnalyticsState(), { reason });
+      },
+      onRefreshFailed: ({ reason, error }) => {
+        const payload: TokenRefreshEvent = { reason, error: error.message, sessionId: this._sessionId };
+        this.emitEvent('player-token-refresh-failed', payload);
+        this.eventBus.emit('tokenRefreshFailed', payload);
+      },
+    });
+  }
+
+  /** Native HLS stalled: probe the playlist; on 401/403 refresh the URL and rejoin */
+  private checkNativeHlsAuth(reason: string): void {
+    const src = this.nativeHlsSrc;
+    if (!src || !this.tokenRefresher || this.nativeRefreshInFlight || typeof fetch !== 'function') return;
+    const token = this.loadToken;
+    fetch(src, { method: 'GET', cache: 'no-store' })
+      .then(res => {
+        if (this.isStale(token)) return;
+        if (res.status === 401 || res.status === 403) void this.recoverNativeHls(reason, false);
+      })
+      .catch(() => { /* offline: the browser keeps retrying on its own */ });
+  }
+
+  /**
+   * Native HLS (Safari/iOS without MSE): get a fresh URL and set it on the <video> again. A short
+   * interruption is unavoidable here; live streams rejoin near the live edge.
+   */
+  private async recoverNativeHls(reason: string, fromError: boolean): Promise<void> {
+    const refresher = this.tokenRefresher;
+    const video = this.videoElement;
+    if (!refresher || !video || !this.nativeHlsSrc || this.nativeRefreshInFlight) return;
+    const token = this.loadToken;
+    const wasPlaying = !video.paused || this.state.playing;
+    const resumeAt = video.currentTime;
+    this.nativeRefreshInFlight = true;
+    try {
+      await refresher.refresh(reason === 'error' ? 'native' : reason);
+      if (this.isStale(token)) return;
+      const fresh = refresher.rewrite(this.nativeHlsSrc);
+      this.nativeHlsSrc = fresh;
+      video.src = fresh;
+      if (!this.isLiveStream() && resumeAt > 0) this.pendingStartTime = resumeAt;
+      this.autoplayPending = wasPlaying;
+      video.load();
+    } catch (error) {
+      if (this.isStale(token)) return;
+      if (fromError) {
+        this.handlePlaybackFailure('NETWORK_ERROR', 'Playback URL could not be refreshed', () => this.restartPlayback(), error);
+      }
+    } finally {
+      this.nativeRefreshInFlight = false;
+    }
   }
 
   private showErrorUI(message: string, allowRetry: boolean): void {
@@ -984,7 +1117,17 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
         e.stopPropagation();
         this.errorRecovery?.resetRetries();
         this.errorRecovery?.stopLiveReconnect();
-        this.restartPlayback();
+        // getSignedPlaybackUrl re-signs inside startPlayback; otherwise get a fresh URL first so the
+        // retry doesn't reload the same expired one
+        const refresher = this.tokenRefresher;
+        if (refresher && !this.config.security?.getSignedPlaybackUrl) {
+          const token = this.loadToken;
+          refresher.refresh('retry').catch(() => {}).finally(() => {
+            if (!this.isStale(token)) this.restartPlayback();
+          });
+        } else {
+          this.restartPlayback();
+        }
       });
       el.appendChild(retry);
     }
@@ -1079,8 +1222,12 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     this.loadToken++;
     this.teardownEngines();
     this.hideErrorUI();
+    this.stopHealthyTimer();
     this.errorRecovery?.resetRetries();
     this.errorRecovery?.stopLiveReconnect();
+    // The newest token belongs to the old source; the new one gets its own refresher
+    this.tokenRefresher?.destroy();
+    this.tokenRefresher = this.hasPlaybackRefresher() ? this.createTokenRefresher() : null;
     this.state.error = undefined;
     this.mediaErrorRecoveries = 0;
     this.authRefreshAttempted = false;
@@ -1094,6 +1241,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     this.state.canPlay = false;
     this.state.ended = false;
     this.state.isLive = false;
+    this.errorRecovery?.setLive(this.config.mode === 'live');
     this.updateState();
 
     // Reset quality state — the new source has its own renditions
@@ -1150,6 +1298,13 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       if (this.isStale(token)) return;
     }
 
+    // After a token refresh, restarts must not reload the expired URL. config.source.src is never
+    // changed (the React wrapper would reload the stream when it changes)
+    if (this.tokenRefresher) {
+      if (getSigned) this.tokenRefresher.setUrl(src);
+      src = this.tokenRefresher.rewrite(src);
+    }
+
     // Detect from the original URL — signed URLs often hide the extension in a query string
     const sourceType = (!source.type || source.type === 'auto') ? detectSourceType(source.src) : source.type;
 
@@ -1165,6 +1320,8 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
 
   private teardownEngines(): void {
     this.stopP2PStats();
+    this.tokenRefresher?.detach();
+    this.nativeHlsSrc = null;
     this.lastLatency = null;
     this.atLiveEdge = true;
 
@@ -1195,6 +1352,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
   private markLive(live: boolean): void {
     if (this.state.isLive === live) return;
     this.state.isLive = live;
+    this.errorRecovery?.setLive(live || this.config.mode === 'live');
     this.controlsManager?.updateLiveState(live || this.config.mode === 'live');
     this.updateState();
   }
@@ -1212,6 +1370,20 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       const hls = await this.createHls(Hls, token);
       if (!hls) return; // superseded while the P2P engine was loading
       this.hls = hls;
+      this.tokenRefresher?.setUrl(src);
+      this.tokenRefresher?.attach(hls, Hls);
+
+      // Before loadSource/attachMedia, so integrations (e.g. a P2P engine) can hook in
+      try {
+        this.config.onHlsCreated?.(hls, Hls);
+      } catch (error) {
+        console.error('[VideoPlayer] onHlsCreated threw:', error);
+      }
+      this.emitEvent('player-hls-created', { hls });
+      this.eventBus.emit('hlsCreated', { hls, Hls, sessionId: this._sessionId });
+      if (this.isStale(token) || this.hls !== hls) return;
+
+      if (this.config.debug) console.log('[VideoPlayer] HLS load', redactUrl(src, this.config.security?.tokenPrefixPattern));
       hls.loadSource(src);
       hls.attachMedia(video);
 
@@ -1230,7 +1402,10 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       // hls.js keeps a finite duration for live streams, so take "live" from the playlist itself
       hls.on(Hls.Events.LEVEL_LOADED, (_: unknown, data: any) => {
         if (this.hls !== hls) return;
-        if (typeof data?.details?.live === 'boolean') this.markLive(data.details.live);
+        if (typeof data?.details?.live === 'boolean') {
+          this.markLive(data.details.live);
+          if (data.details.live) this.applyLiveBufferDefaults(hls);
+        }
       });
 
       // All fragment traffic (HTTP or P2P) for accurate P2P stats
@@ -1253,6 +1428,8 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       });
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       // Native HLS (Safari / iOS), or hls.js unavailable
+      this.tokenRefresher?.setUrl(src);
+      this.nativeHlsSrc = src;
       video.src = src;
     } else {
       this.handlePlaybackFailure(
@@ -1274,9 +1451,33 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     const strategy = p2pConfig?.strategy ?? 'latency';
     const wantsP2P = !!p2pConfig?.enabled && isP2PSupported();
     const lowLatency = resolveLowLatency(this.config.lowLatency, wantsP2P ? strategy : undefined);
-    const xhrSetup = (xhr: XMLHttpRequest) => {
+
+    // Auth header first, then any xhrSetup from config.hlsConfig
+    const userXhrSetup = this.config.hlsConfig?.xhrSetup as ((xhr: XMLHttpRequest, url: string) => void | Promise<void>) | undefined;
+    const baseXhrSetup = (xhr: XMLHttpRequest, url: string) => {
       const header = this.getAuthHeader();
       if (header) xhr.setRequestHeader(header.name, header.value);
+      return userXhrSetup?.(xhr, url);
+    };
+    const build = (p2p: boolean): Record<string, unknown> => {
+      const config = buildHlsConfig({
+        lowLatency,
+        latencyMode: this.config.live?.latencyMode,
+        p2p,
+        strategy,
+        xhrSetup: baseXhrSetup,
+        userConfig: this.config.hlsConfig,
+      });
+      // Token refresh is applied last: the URL swap wraps the xhrSetup above, plus retry policies.
+      // The policies are installed for every HLS load so status 0 / timeouts (network switches) are
+      // retried; without a refresher a 401/403 keeps hls.js's default decision (no retry).
+      const tokenConfig = (this.tokenRefresher ?? NO_REFRESH).hlsConfig(Hls, baseXhrSetup);
+      for (const name of ['manifestLoadPolicy', 'playlistLoadPolicy', 'fragLoadPolicy']) {
+        // A consumer's own policy wins
+        if (this.config.hlsConfig?.[name] !== undefined) delete tokenConfig[name];
+      }
+      if (!this.tokenRefresher) tokenConfig.xhrSetup = baseXhrSetup;
+      return { ...config, ...tokenConfig };
     };
 
     if (wantsP2P) {
@@ -1287,13 +1488,13 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
         try {
           const HlsWithP2P = P2PEngine.injectMixin(Hls);
           const hls = new HlsWithP2P({
-            ...buildHlsConfig({ lowLatency, p2p: true, strategy, xhrSetup }),
+            ...build(true),
             p2p: {
               core: buildP2PCoreConfig({
                 p2p: p2pConfig!,
                 lowLatency,
                 sourceUrl: this.config.source.src,
-                httpRequestSetup: this.config.security ? this.p2pHttpRequestSetup : undefined,
+                httpRequestSetup: (this.config.security || this.tokenRefresher) ? this.p2pHttpRequestSetup : undefined,
               }),
             },
           });
@@ -1309,19 +1510,40 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       console.warn('[VideoPlayer] p2p.enabled but WebRTC is unavailable — using HTTP only');
     }
 
-    return new Hls(buildHlsConfig({ lowLatency, p2p: false, strategy, xhrSetup }));
+    return new Hls(build(false));
+  }
+
+  /**
+   * Live HLS memory bounds for long sessions (hls.js keeps the whole back buffer by default). Applied
+   * once the playlist says "live", unless set explicitly via hlsConfig or the latency settings.
+   */
+  private applyLiveBufferDefaults(hls: any): void {
+    const config = hls?.config;
+    if (!config) return;
+    const user = this.config.hlsConfig ?? {};
+    if (user.backBufferLength === undefined && !Number.isFinite(config.backBufferLength)) {
+      config.backBufferLength = LIVE_BACK_BUFFER_SECONDS;
+    }
+    const hasDurationSync = (config.liveSyncDuration ?? null) !== null || (config.liveMaxLatencyDuration ?? null) !== null;
+    // Count-based only: hls.js rejects mixing *Duration and *DurationCount
+    if (user.liveMaxLatencyDurationCount === undefined && !hasDurationSync && !Number.isFinite(config.liveMaxLatencyDurationCount)) {
+      config.liveMaxLatencyDurationCount = Math.max(10, (config.liveSyncDurationCount ?? 3) + 1);
+    }
   }
 
   /** p2p-media-loader's own HTTP segment requests: add the auth header, preserve byte ranges */
   private p2pHttpRequestSetup = async (
-    url: string,
+    segmentUrl: string,
     _segmentByteRange: unknown,
     signal?: AbortSignal,
     requestByteRange?: { start: number; end?: number }
   ): Promise<Request | undefined> => {
+    // Wait for an in-flight token refresh, then use the newest token
+    await this.tokenRefresher?.settled();
+    const url = this.tokenRefresher?.rewrite(segmentUrl) ?? segmentUrl;
     const header = this.getAuthHeader();
-    if (!header) return undefined;
-    const headers: Record<string, string> = { [header.name]: header.value };
+    if (!header && url === segmentUrl) return undefined;
+    const headers: Record<string, string> = header ? { [header.name]: header.value } : {};
     if (requestByteRange) {
       headers.Range = `bytes=${requestByteRange.start}-${requestByteRange.end ?? ''}`;
     }
@@ -1439,6 +1661,34 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     if (!data?.fatal) return;
 
     const status = data.response?.code;
+    const refresher = this.tokenRefresher;
+
+    // Signed URLs: hls.js already retried (with in-place token swaps). Last resort: fresh URL + reload
+    if (data.type === 'networkError' && refresher) {
+      const authFailure = status === 401 || status === 403;
+      const message = authFailure ? `HTTP ${status}: ${data.details}` : String(data.details ?? 'HLS network error');
+      const code: VidstreamErrorCode = authFailure ? 'AUTH_ERROR' : 'NETWORK_ERROR';
+      this.handlePlaybackFailure(code, message, () => {
+        if (this.hls !== hls) return;
+        const token = this.loadToken;
+        refresher.refresh('fatal')
+          .then(() => {
+            if (this.isStale(token) || this.hls !== hls) return;
+            const fresh = refresher.rewrite(this.lastHlsUrl(hls));
+            // hls.js re-attaches the media itself (short visible rebuffer) and auto-starts loading
+            if (hls.levels?.length) hls.loadSource(fresh);
+            else this.restartPlayback();
+          })
+          .catch(() => {
+            // Refresh failed or rate-limited (offline, backend down): keep the current token and retry
+            if (this.isStale(token) || this.hls !== hls) return;
+            if (hls.levels?.length) hls.startLoad();
+            else this.restartPlayback();
+          });
+      }, data.error);
+      return;
+    }
+
     if (data.type === 'networkError' && (status === 401 || status === 403)) {
       this.handleAuthorizationFailure(new Error(`HTTP ${status}: ${data.details}`), () => {
         if (this.hls === hls && hls.levels?.length) hls.startLoad();
@@ -1465,6 +1715,11 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     } else {
       this.handlePlaybackFailure('DECODE_ERROR', message, () => this.restartPlayback(), data.error);
     }
+  }
+
+  /** URL of the manifest the hls.js instance was loaded with */
+  private lastHlsUrl(hls: any): string {
+    return typeof hls?.url === 'string' && hls.url ? hls.url : this.config.source.src;
   }
 
   private async loadDashSource(src: string, token: number): Promise<void> {
@@ -1919,6 +2174,16 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     return this.p2pStats?.snapshot() ?? null;
   }
 
+  /** The active hls.js instance (null for MP4/DASH/native HLS or before it is created) */
+  getHls(): any {
+    return this.hls;
+  }
+
+  /** The active dash.js MediaPlayer, or null */
+  getDash(): any {
+    return this.dash;
+  }
+
   // ============================================================================
   // EVENT BUS (VidstreamPlayerInstance)
   // ============================================================================
@@ -2021,12 +2286,22 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
       }
     }
 
-    if ('security' in config) this.authToken = this.config.security?.authToken;
+    if ('security' in config) {
+      this.authToken = this.config.security?.authToken;
+      if (!this.hasPlaybackRefresher()) {
+        this.tokenRefresher?.destroy();
+        this.tokenRefresher = null;
+      } else if (!this.tokenRefresher) {
+        this.tokenRefresher = this.createTokenRefresher();
+      }
+    }
 
     // Engine-level settings: rebuild the HLS engine (resumes VOD position; live rejoins at the target)
     if (
       ('lowLatency' in config && !sameJson(config.lowLatency, prev.lowLatency)) ||
-      ('p2p' in config && !sameJson(config.p2p, prev.p2p))
+      ('p2p' in config && !sameJson(config.p2p, prev.p2p)) ||
+      ('live' in config && !sameJson(config.live, prev.live)) ||
+      ('hlsConfig' in config && !sameJson(config.hlsConfig, prev.hlsConfig))
     ) {
       if (this.hls) this.restartPlayback();
     }
@@ -2034,6 +2309,7 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     if ('errorRecovery' in config) {
       this.errorRecovery?.destroy();
       this.errorRecovery = new ErrorRecoveryManager(this.config.errorRecovery);
+      this.errorRecovery.setLive(this.isLiveStream());
     }
 
     if ('quality' in config) {
@@ -2158,6 +2434,9 @@ export class VideoPlayer implements PlayerAPI, VidstreamPlayerInstance {
     this.hideErrorUI();
 
     this.teardownEngines();
+    this.stopHealthyTimer();
+    this.tokenRefresher?.destroy();
+    this.tokenRefresher = null;
 
     if (this.videoElement) {
       this.videoElement.pause();
