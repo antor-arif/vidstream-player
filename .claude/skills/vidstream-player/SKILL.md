@@ -143,6 +143,22 @@ Instructly Media Engine URLs carry the token in the **path** (`/t/{exp}/{nonce}/
   - Stats come from `getStats` (KB → bytes) and `getPeersInfo`. The engine is destroyed in `teardownEngines`.
   - The default provider is still p2p-media-loader.
 
+## Live analytics + support tools (P2, 2026-11-09)
+- **`src/services/liveSessionStats.ts`** (`LiveSessionStats`): one instance per source, which tracks:
+  - `watchedSeconds`: frames actually rendered, excluding pauses and stalls;
+  - `joinedAt` / `lastSeenAt`;
+  - rebuffers: a `waiting` while `video.seeking` is a seek, not a rebuffer;
+  - average latency (sampled while playing);
+  - quality switches: the first rendition doesn't count;
+  - token refreshes.
+- **Where the stats go:** `getLiveStats()`; LMS `onProgressSave` gets `isLive`, `watchedSeconds`, `joinedAt` and `lastSeenAt` through `LMSProgressManager.setLiveStats()`; analytics heartbeats and the DOM `player-heartbeat` get `customData.live`.
+  - In live mode LMS skips percentage, milestones and completion.
+  - Analytics payloads replace a non-finite `duration` or `currentTime` with 0.
+- **`components/StatsOverlay.ts`:** `controls.stats` (`true` | `'visible'`). Toggled with the `i` key (only when enabled) or `toggleStats(force?)`. Rendered with text only (no innerHTML) and refreshed once a second while visible.
+- **`services/mediaSession.ts`:** `applyMediaSession` runs on `play` (title and poster; play/pause; seek actions only for VOD), playbackState follows play and pause, and the handlers are cleared on destroy. `mediaSession: false` opts out.
+  - `WakeLockController` is used when `live.wakeLock` is set: it acquires on `playing`, releases on pause, ended and destroy, and re-acquires on `visibilitychange`.
+- **Test-server gotcha:** `signed-live-server.mjs` TS media now loops. Before this fix, scripts that didn't call `/admin/state?s=live` ran off the end of the 600 s of media, and the frozen edge looked exactly like a player stall bug.
+
 ## Rules that protect users of the package
 
 1. **The public API only grows.** Never rename or remove anything exported from `src/index.ts` or `src/react/index.ts`, any `PlayerConfig` key, a public method, a DOM event name, a CSS class consumers may style (`vp-*`, `video-player-container`), or the `<video-player>` tag. Add aliases instead and mark the old name `@deprecated` in JSDoc. Breaking changes need a major version bump plus a migration note in the docs site.

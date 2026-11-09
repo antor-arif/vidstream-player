@@ -10,6 +10,7 @@
 // Formats (as on the edge):
 //   ts:master.m3u8  HLS (MPEG-TS), 3 s segments, 8 per playlist. app "abr": 720p + 360p, app "live": 720p
 //   master.m3u8     LL-HLS (fMP4), 0.5 s parts, 2 s segments, PART-HOLD-BACK 1.5 s
+//   TS loops forever; LL-HLS media lasts 10 minutes after the last /admin/state?s=live (then the edge freezes)
 //
 // Fake backend + controls (no token needed):
 //   GET /api/sign?app=abr&stream=demo&ttl=25&kind=hls|llhls   -> { url }  (signed for the current viewer IP)
@@ -111,7 +112,9 @@ function elapsed() {
   const now = state === 'ended' ? endedAt : Date.now();
   return Math.max(0, (now - startedAt) / 1000);
 }
-const availableSegments = () => Math.min(Math.floor(elapsed() / SEG), tsSegs['720p'].length);
+// TS media loops forever (EXT-X-DISCONTINUITY at each wrap), so long runs never hit a frozen edge
+const TS_COUNT = Math.min(...renditions.map(r => tsSegs[r.name].length));
+const availableSegments = () => Math.floor(elapsed() / SEG);
 const availableParts = () => Math.min(Math.floor(elapsed() / 0.5), parts.length);
 
 // ---------------------------------------------------------------------------
@@ -159,8 +162,12 @@ function tsMedia(name) {
   const segs = tsSegs[name];
   const available = availableSegments();
   const first = Math.max(0, available - WINDOW);
-  const lines = ['#EXTM3U', '#EXT-X-VERSION:3', `#EXT-X-TARGETDURATION:${SEG}`, `#EXT-X-MEDIA-SEQUENCE:${first}`];
-  for (let i = first; i < available; i++) lines.push(`#EXTINF:${segs[i].duration.toFixed(3)},`, `ts_${name}_${i}.ts`);
+  const lines = ['#EXTM3U', '#EXT-X-VERSION:3', `#EXT-X-TARGETDURATION:${SEG}`, `#EXT-X-MEDIA-SEQUENCE:${first}`,
+    `#EXT-X-DISCONTINUITY-SEQUENCE:${Math.floor(first / TS_COUNT)}`];
+  for (let i = first; i < available; i++) {
+    if (i > first && i % TS_COUNT === 0) lines.push('#EXT-X-DISCONTINUITY');
+    lines.push(`#EXTINF:${segs[i % TS_COUNT].duration.toFixed(3)},`, `ts_${name}_${i}.ts`);
+  }
   return lines.join('\n') + '\n';
 }
 
@@ -264,7 +271,7 @@ async function handle(req, res) {
     const i = Number(f[2]);
     if (i >= availableSegments()) { stats.notFound++; return send(404, 'not yet'); }
     stats.segments++;
-    return send(200, fs.readFileSync(tsSegs[f[1]][i].file), 'video/mp2t');
+    return send(200, fs.readFileSync(tsSegs[f[1]][i % TS_COUNT].file), 'video/mp2t');
   }
 
   if (file === 'master.m3u8') { stats.playlists++; return send(200, llMaster(), 'application/vnd.apple.mpegurl'); }
