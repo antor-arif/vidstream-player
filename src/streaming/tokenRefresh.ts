@@ -203,6 +203,8 @@ export class TokenRefresher {
         return retryCount < this.maxRetries;
       }
       if (!code || isTimeout) return retryCount < this.maxRetries;
+      // 429 (rate limited, e.g. vidstream-embed VOD key pacing): back off and retry instead of failing
+      if (code === 429) return retryCount < this.maxRetries;
       return defaultDecision;
     };
 

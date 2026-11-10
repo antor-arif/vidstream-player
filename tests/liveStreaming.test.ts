@@ -199,6 +199,8 @@ describe('TokenRefresher', () => {
     expect(shouldRetry({}, 0, false, undefined, false)).toBe(true);
     expect(shouldRetry({}, 0, true, { code: 200 }, false)).toBe(true);
     expect(shouldRetry({}, 0, false, { code: 404 }, false)).toBe(false);
+    expect(shouldRetry({}, 0, false, { code: 429 }, false)).toBe(true);
+    expect(shouldRetry({}, 6, false, { code: 429 }, false)).toBe(false);
     expect(shouldRetry({}, 0, false, { code: 500 }, true)).toBe(true);
   });
 
