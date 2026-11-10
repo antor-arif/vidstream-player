@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => {
       manifestLoadPolicy: policy(),
       playlistLoadPolicy: policy(),
       fragLoadPolicy: policy(),
+      keyLoadPolicy: policy(),
     };
     config: any;
     handlers: Record<string, Function[]> = {};
@@ -199,6 +200,22 @@ describe('TokenRefresher', () => {
     expect(shouldRetry({}, 0, true, { code: 200 }, false)).toBe(true);
     expect(shouldRetry({}, 0, false, { code: 404 }, false)).toBe(false);
     expect(shouldRetry({}, 0, false, { code: 500 }, true)).toBe(true);
+  });
+
+  it('AES-128 key requests under the token: a 403 refreshes, and the retry uses the fresh token', async () => {
+    const KEY1 = 'https://edge.example.com/t/1700000000/nonceAAAA/sigAAAA/vod/AssetAssetAsset01/k/3';
+    const getFreshUrl = vi.fn(async () => T2);
+    const r = new TokenRefresher({ getFreshUrl });
+    r.setUrl(T1);
+    const cfg: any = r.hlsConfig(mocks.FakeHls);
+    expect(cfg.keyLoadPolicy.default.errorRetry.maxNumRetry).toBe(6);
+    expect(cfg.keyLoadPolicy.default.errorRetry.shouldRetry({}, 0, false, { code: 403 }, false)).toBe(true);
+    await flush();
+    expect(getFreshUrl).toHaveBeenCalledTimes(1);
+    const opened: string[] = [];
+    const xhr = Object.assign(new XMLHttpRequest(), { open: (_m: string, u: string) => opened.push(u) });
+    await cfg.xhrSetup(xhr, KEY1);
+    expect(opened).toEqual(['https://edge.example.com/t/1700009999/nonceBBBB/sigBBBB/vod/AssetAssetAsset01/k/3']);
   });
 
   it('without a refresher a 403 gets only 2 quick retries (no retry loop)', () => {

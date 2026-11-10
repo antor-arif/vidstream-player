@@ -227,7 +227,9 @@ export class TokenRefresher {
         return this.pending ? this.pending.then(go, go) : go();
       },
     };
-    for (const name of ['manifestLoadPolicy', 'playlistLoadPolicy', 'fragLoadPolicy']) {
+    // keyLoadPolicy: AES-128 key URLs under the same token (vidstream-embed VOD: `/t/…/vod/<asset>/k/<n>`)
+    // must refresh too, or a seek after the token expired fails on the key
+    for (const name of ['manifestLoadPolicy', 'playlistLoadPolicy', 'fragLoadPolicy', 'keyLoadPolicy']) {
       const p = policy(name);
       if (p) config[name] = p;
     }
