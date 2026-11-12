@@ -203,6 +203,8 @@ export class TokenRefresher {
         return retryCount < this.maxRetries;
       }
       if (!code || isTimeout) return retryCount < this.maxRetries;
+      // 429 (rate limited, e.g. vidstream-embed VOD key pacing): back off and retry instead of failing
+      if (code === 429) return retryCount < this.maxRetries;
       return defaultDecision;
     };
 
@@ -227,7 +229,9 @@ export class TokenRefresher {
         return this.pending ? this.pending.then(go, go) : go();
       },
     };
-    for (const name of ['manifestLoadPolicy', 'playlistLoadPolicy', 'fragLoadPolicy']) {
+    // keyLoadPolicy: AES-128 key URLs under the same token (vidstream-embed VOD: `/t/…/vod/<asset>/k/<n>`)
+    // must refresh too, or a seek after the token expired fails on the key
+    for (const name of ['manifestLoadPolicy', 'playlistLoadPolicy', 'fragLoadPolicy', 'keyLoadPolicy']) {
       const p = policy(name);
       if (p) config[name] = p;
     }

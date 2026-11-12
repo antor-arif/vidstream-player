@@ -78,6 +78,12 @@ const EDITABLE_SELECTOR = 'input, textarea, select, [contenteditable=""], [conte
  * Manages video player controls
  */
 export class ControlsManager {
+  /** Controls hide after this long without input: longer after touch (no hover to bring them back) */
+  static readonly HIDE_AFTER_MOUSE_MS = 3000;
+  static readonly HIDE_AFTER_TOUCH_MS = 5000;
+  /** Hidden controls stay tappable this long (0.3 s fade + grace) */
+  static readonly IDLE_GRACE_MS = 700;
+
   private container: HTMLElement;
   private config: Required<ControlsConfig>;
   private callbacks: ControlsCallbacks;
@@ -119,6 +125,10 @@ export class ControlsManager {
   private isDraggingVolume = false;
   private progressMouseDownTime = 0;
   private hideControlsTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Hidden controls keep taking taps for a moment (fade-out + grace) before pointer-events go off */
+  private idleSettleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Last pointer input was touch: controls stay longer (no hover to bring them back) */
+  private lastInputTouch = false;
   private isControlsVisible = true;
   private isInitialPlay = true;
   private lastActionAnimationTime = 0;
@@ -1104,6 +1114,11 @@ export class ControlsManager {
     }
 
     // Controls visibility
+    // Input type + "user is using the controls": a tap on a control (or anywhere) restarts the hide timer
+    this.listen(this.container, 'pointerdown', (e) => {
+      this.lastInputTouch = (e as PointerEvent).pointerType === 'touch';
+      if ((e.target as HTMLElement | null)?.closest?.('.vp-controls') && this.isControlsVisible) this.resetHideTimer();
+    }, { capture: true });
     this.listen(this.container, 'mousemove', () => this.handleMouseMove());
     this.listen(this.container, 'mouseleave', () => this.startHideTimer());
     this.listen(this.container, 'mouseenter', () => {
@@ -1621,6 +1636,7 @@ export class ControlsManager {
    * Show controls
    */
   showControls(): void {
+    this.clearIdleSettle();
     this.controlsElement?.classList.add('visible');
     this.gradientTop?.classList.add('visible');
     this.gradientBottom?.classList.add('visible');
@@ -1643,6 +1659,28 @@ export class ControlsManager {
     this.container.classList.add('vp-idle');
     this.closeAllDropdowns();
     this.isControlsVisible = false;
+    // Controls fade out over 0.3 s; keep them tappable through the fade and a short grace, so a tap
+    // that was already on its way still presses the button (touch has no hover to revive them)
+    this.clearIdleSettle();
+    this.idleSettleTimer = setTimeout(() => {
+      this.idleSettleTimer = null;
+      if (!this.isControlsVisible) this.container.classList.add('vp-idle-settled');
+    }, ControlsManager.IDLE_GRACE_MS);
+  }
+
+  private clearIdleSettle(): void {
+    if (this.idleSettleTimer) clearTimeout(this.idleSettleTimer);
+    this.idleSettleTimer = null;
+    this.container.classList.remove('vp-idle-settled');
+  }
+
+  /** Swap a button's icon only when it changes. Replacing the SVG under the pointer between mousedown
+   *  and mouseup made browsers drop the click (state updates run several times a second). */
+  private setIcon(button: HTMLElement | null | undefined, icon: keyof typeof Icons): void {
+    const inner = button?.querySelector('.vp-btn-inner') as HTMLElement | null;
+    if (!inner || inner.dataset.icon === icon) return;
+    inner.innerHTML = Icons[icon];
+    inner.dataset.icon = icon;
   }
 
   /**
@@ -1654,7 +1692,9 @@ export class ControlsManager {
     }
     // Remove idle class when user is active
     this.container.classList.remove('vp-idle');
-    this.hideControlsTimer = setTimeout(() => this.hideControls(), 3000);
+    this.clearIdleSettle();
+    const delay = this.lastInputTouch ? ControlsManager.HIDE_AFTER_TOUCH_MS : ControlsManager.HIDE_AFTER_MOUSE_MS;
+    this.hideControlsTimer = setTimeout(() => this.hideControls(), delay);
   }
 
   /**
@@ -1704,10 +1744,7 @@ export class ControlsManager {
 
     // Update play/pause button
     if (this.playPauseBtn) {
-      const inner = this.playPauseBtn.querySelector('.vp-btn-inner');
-      if (inner) {
-        inner.innerHTML = state.playing ? Icons.pause : Icons.play;
-      }
+      this.setIcon(this.playPauseBtn, state.playing ? 'pause' : 'play');
       this.playPauseBtn.setAttribute('aria-label', state.playing ? 'Pause' : 'Play');
       this.playPauseBtn.setAttribute('title', state.playing ? 'Pause' : 'Play');
     }
@@ -1843,22 +1880,19 @@ export class ControlsManager {
       } else if (state.volume < 0.5) {
         icon = 'volumeLow';
       }
-      const inner = this.muteBtn.querySelector('.vp-btn-inner');
-      if (inner) inner.innerHTML = Icons[icon];
+      this.setIcon(this.muteBtn, icon);
       this.muteBtn.setAttribute('aria-label', state.muted ? 'Unmute' : 'Mute');
     }
 
     // Update fullscreen button
     if (this.fullscreenBtn) {
-      const inner = this.fullscreenBtn.querySelector('.vp-btn-inner');
-      if (inner) inner.innerHTML = state.fullscreen ? Icons.fullscreenExit : Icons.fullscreen;
+      this.setIcon(this.fullscreenBtn, state.fullscreen ? 'fullscreenExit' : 'fullscreen');
       this.fullscreenBtn.setAttribute('aria-label', state.fullscreen ? 'Exit Fullscreen' : 'Fullscreen');
     }
 
     // Update PIP button
     if (this.pipBtn) {
-      const inner = this.pipBtn.querySelector('.vp-btn-inner');
-      if (inner) inner.innerHTML = state.pip ? Icons.pipExit : Icons.pip;
+      this.setIcon(this.pipBtn, state.pip ? 'pipExit' : 'pip');
     }
 
     // Loading indicator
@@ -1879,15 +1913,13 @@ export class ControlsManager {
   updatePlaylistButtons(hasPrev: boolean, hasNext: boolean): void {
     if (this.prevBtn) {
       this.prevBtn.style.display = hasPrev ? '' : 'none';
-      const inner = this.prevBtn.querySelector('.vp-btn-inner');
-      if (inner) inner.innerHTML = Icons.prev;
+      this.setIcon(this.prevBtn, 'prev');
       this.prevBtn.setAttribute('aria-label', 'Previous video');
       this.prevBtn.setAttribute('title', 'Previous video');
     }
     if (this.nextBtn) {
       this.nextBtn.style.display = hasNext ? '' : 'none';
-      const inner = this.nextBtn.querySelector('.vp-btn-inner');
-      if (inner) inner.innerHTML = Icons.next;
+      this.setIcon(this.nextBtn, 'next');
       this.nextBtn.setAttribute('aria-label', 'Next video');
       this.nextBtn.setAttribute('title', 'Next video');
     }
@@ -2057,6 +2089,7 @@ export class ControlsManager {
     this.seekFeedbackEl.left?.remove();
     this.seekFeedbackEl.right?.remove();
     this.container.querySelectorAll('.vp-speed-feedback, .vp-volume-feedback').forEach(el => el.remove());
+    this.clearIdleSettle();
     this.container.classList.remove('vp-idle', 'vp-dragging', 'vp-live', 'vp-size-xs', 'vp-size-sm', 'vp-size-md', 'vp-size-lg');
     // The preview is owned by VideoPlayer — just unmount its element
     this.thumbnailPreview?.destroy();

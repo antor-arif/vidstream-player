@@ -352,10 +352,12 @@ export function getBaseStyles(): string {
       opacity: 0 !important;
     }
 
-    /* Show gradients on hover when idle */
-    .video-player-container.vp-playing.vp-idle:hover .vp-gradient-top,
-    .video-player-container.vp-playing.vp-idle:hover .vp-gradient-bottom {
-      opacity: 1 !important;
+    /* Show gradients on hover when idle: mouse-pointer devices only (touch leaves a sticky :hover) */
+    @media (pointer: fine) {
+      .video-player-container.vp-playing.vp-idle:hover .vp-gradient-top,
+      .video-player-container.vp-playing.vp-idle:hover .vp-gradient-bottom {
+        opacity: 1 !important;
+      }
     }
 
     /* Video Title Overlay */
@@ -612,16 +614,22 @@ export function getBaseStyles(): string {
       opacity: 1;
     }
 
-    /* When video is playing and user is idle, force hide controls */
+    /* When video is playing and user is idle, force hide controls. They stop taking clicks only once
+       settled (fade + grace, see ControlsManager.IDLE_GRACE_MS): a tap already on its way still lands */
     .video-player-container.vp-playing.vp-idle .vp-controls {
       opacity: 0 !important;
+    }
+    .video-player-container.vp-playing.vp-idle.vp-idle-settled .vp-controls {
       pointer-events: none;
     }
 
-    /* Show controls on hover when idle (user activity) */
-    .video-player-container.vp-playing.vp-idle:hover .vp-controls {
-      opacity: 1 !important;
-      pointer-events: auto;
+    /* Show controls on hover when idle (user activity). Mouse-pointer devices only: after a tap, touch
+       browsers keep a sticky :hover, which made hidden buttons randomly tappable (or not) on phones */
+    @media (pointer: fine) {
+      .video-player-container.vp-playing.vp-idle:hover .vp-controls {
+        opacity: 1 !important;
+        pointer-events: auto;
+      }
     }
 
     /* Hide cursor when idle for clean viewing */
@@ -819,6 +827,15 @@ export function getBaseStyles(): string {
     }
 
     /* Control Buttons */
+    /* The button, never its icon, is the click target: icons get swapped on state updates, and a
+       click whose mousedown target was replaced before mouseup is dropped by the browser */
+    .vp-control-btn > *,
+    .vp-control-btn svg,
+    .vp-big-play > *,
+    .vp-live-badge > * {
+      pointer-events: none;
+    }
+
     .vp-control-btn {
       background: transparent;
       border: none;
@@ -1412,6 +1429,8 @@ export function getBaseStyles(): string {
     /* Fullscreen idle state - hide controls (no :hover override - controlled by JS) */
     .video-player-container:fullscreen.vp-playing.vp-idle .vp-controls {
       opacity: 0 !important;
+    }
+    .video-player-container:fullscreen.vp-playing.vp-idle.vp-idle-settled .vp-controls {
       pointer-events: none;
     }
 
